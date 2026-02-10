@@ -24,6 +24,20 @@ export type QuestionStatus =
   | "closed"
   | "revealed";
 
+// ステップごとの参加者表示設定
+export interface StepDisplayConfig {
+  message?: string;          // 参加者に表示するメッセージ（例: "テーブルに着席してください"）
+  showTablemates?: boolean;  // 同テーブルのメンバー名を表示するか
+  showFields?: string[];     // 表示する参加者フィールドID（例: ["school", "age"]）
+}
+
+// ステップ入力設定
+export interface StepInputConfig {
+  prompt: string;           // "好きな食べ物は？"
+  inputType: "text" | "number" | "select";
+  options?: string[];       // selectの場合
+}
+
 // 台本のステップ
 export interface ScenarioStep {
   type: StepType;
@@ -32,12 +46,35 @@ export interface ScenarioStep {
   config?: {
     timeLimit?: number;  // 秒
   };
+  display?: StepDisplayConfig;  // 参加者表示設定
+  input?: StepInputConfig;      // 参加者入力プロンプト
+}
+
+// タイムラインスナップショット（localStorage保存用）
+export interface TimelineSnapshot {
+  tableNumber: number;
+  tablemates: string[];       // スナップショット時点のテーブルメイト名
+  fieldValues?: Record<string, string | number>;
+  capturedAt: number;
+}
+
+// エントリーフィールド定義
+export interface EntryField {
+  id: string;        // "name", "school", "age" など
+  label: string;     // 表示名: "名前", "学校名" など
+  type: "text" | "number" | "select";
+  required: boolean;
+  options?: string[]; // type="select" の場合の選択肢
 }
 
 // ルーム設定
 export interface RoomConfig {
+  eventName: string;
+  eventDate: string; // YYYY-MM-DD
   tableCount: number;
   createdAt: number;
+  adminPassword: string;
+  entryFields: EntryField[];  // 参加者入力フィールド定義
 }
 
 // ルーム状態
@@ -52,6 +89,7 @@ export interface Player {
   tableNumber: number;
   connected: boolean;
   joinedAt: number;
+  fields: Record<string, string | number>;  // カスタムフィールド値
 }
 
 // お題
@@ -95,6 +133,35 @@ export interface CurrentGame {
   };
 }
 
+// 管理者メッセージ
+export type MessageTarget =
+  | { type: "all" }
+  | { type: "table"; tableNumber: number }
+  | { type: "player"; playerId: string };
+
+export interface AdminMessage {
+  id: string;
+  text: string;
+  target: MessageTarget;
+  sentAt: number;
+  sentDuringStep: number;  // 送信時のcurrentStep（タイムライン並び順用）
+}
+
+// ステップ回答
+export interface StepResponse {
+  value: string | number;
+  submittedAt: number;
+  playerName: string;       // 非正規化（表示用）
+  tableNumber: number;      // 非正規化（テーブル絞り込み用）
+}
+
+// 開示モード
+export type RevealMode = "named" | "anonymous" | "admin_only";
+export interface StepInputReveal {
+  mode: RevealMode;
+  target: "all" | "same_table";
+}
+
 // ルーム全体
 export interface Room {
   config: RoomConfig;
@@ -108,6 +175,9 @@ export interface Room {
     tables?: Record<string, TableScore>;
     players?: Record<string, PlayerScore>;
   };
+  messages?: Record<string, AdminMessage>;
+  stepResponses?: Record<string, Record<string, StepResponse>>;  // stepIndex -> playerId -> response
+  stepReveals?: Record<string, StepInputReveal>;                  // stepIndex -> reveal config
 }
 
 // デフォルトの台本

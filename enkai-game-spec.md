@@ -34,6 +34,12 @@
 - ルームID（短い英数字、自動生成 or 手動設定）の作成
 - テーブル数の設定（5〜10卓）
 - 参加者QRコード表示（ルームURLを含む）
+- カスタムエントリーフィールド設定
+  - 参加者に入力を求める項目を自由に定義（追加・削除・並べ替え）
+  - フィールドタイプ: テキスト / 数値 / セレクト（選択肢をカンマ区切りで指定）
+  - 必須/任意の設定
+  - デフォルト: 「名前」（テキスト、必須）
+  - 受付開始前のみ編集可能
 
 #### 1-2. 台本（シナリオ）ビュー
 
@@ -57,6 +63,13 @@
 - 現在のステップがハイライト表示
 - 各ステップに対してゲームモードの選択・お題の入力が可能
 - 台本のステップは管理者が自由に追加・削除・並び替え可能
+- **ステップ割り込み**: ライブ進行中に「割り込み」ボタンで新ステップをcurrentStep+1に即座に挿入（台本編集を開く必要なし）
+  - ステップタイプ・ラベル・メッセージを設定可能
+  - 「挿入後すぐに進む」オプション付き
+- **進行コントロールはスティッキー固定**: パネル上部に張り付き、スクロールしても常にアクセス可能
+- **表示モード切替**: ヘッダーに「全パネル」/「進行集中」タブ
+  - 全パネル: ルーム情報(3) + 台本(6) + 参加者(3) の3カラム
+  - 進行集中: 台本(8) + 参加者(4) の2カラム（ルーム情報を非表示）
 
 #### 1-3. ゲーム進行パネル
 
@@ -73,17 +86,56 @@
 - 参加者の配置状況モニター
 - スコア自動計算・ランキング表示指示
 
-#### 1-4. 参加者モニター
+#### 1-5. 管理者メッセージ送信
+
+進行中に参加者へメッセージを直接送信する機能。
+
+- テキストエリア + ターゲット選択（全員 / テーブルN / 個人）
+- 送信済みメッセージの履歴表示（折りたたみ）
+- メッセージは参加者のタイムラインに黄色のカードとして表示
+
+#### 1-6. ステップ入力プロンプト
+
+各ステップに参加者入力を設定し、回答を収集・開示する機能。
+
+- ステップ編集（個別/台本）で「入力プロンプトを追加」チェックボックス
+- プロンプトテキスト・入力タイプ（text/number/select）・選択肢を設定
+- 回答閲覧パネル（StepResponsesPanel）: 回答一覧をリアルタイム表示
+- 開示コントロール（6パターン）:
+  - 名前付き（全員）/ 名前付き（同テーブル）
+  - 匿名（全員）/ 匿名（同テーブル）
+  - 管理者のみ / 開示解除
+
+#### 1-4. 参加者モニター・テーブル割り当て
 
 - 接続中の参加者一覧（名前・テーブル番号・接続状態）
 - テーブルごとのグループ表示
+- 「未割当」エリア: テーブル未割当の参加者をまとめて表示
+- テーブル割り当て操作: 参加者カードをクリック → テーブル番号を選択して割り当て
+- テーブル間の移動: 割り当て済みの参加者も別テーブルに移動可能
+- リアルタイム更新（Firebase経由で参加者画面にも即反映）
 
-### 2. 参加者エントリー画面 `/`
+### 2. 参加者エントリー画面 `/?room=XXX`
 
 - ルームIDの入力（QRコードからアクセスすれば不要）
-- 名前の入力
-- テーブル番号の選択（1〜N）
+- 管理者が定義したカスタムエントリーフィールドに基づく動的フォーム
+  - フィールドタイプ: テキスト / 数値 / セレクト（選択肢）
+  - 必須/任意の設定
+  - 例: 「名前」「学校名」「年齢」「役職」など自由に設定可能
+- テーブル番号は管理者が後から割り当て（参加者は選択しない）
 - 「参加する」ボタン
+- エントリー完了後: **スクロール型タイムライン表示**
+  - 管理者の進行（currentStep）に連動して新しいカードが下に追加される
+  - 各ステップの `display` 設定に基づき、メッセージ・テーブルメイト・フィールド情報を表示
+  - テーブルメイト等の動的情報は localStorage にスナップショット保存（テーブル移動後も前の情報が残る）
+  - ページリロード時は localStorage から復元
+  - 最新カードへの自動スクロール
+  - **管理者メッセージの統合表示**: ステップカードとメッセージカード（黄色）を時系列で統合
+    - メッセージはターゲット（全員/自分のテーブル/自分宛）でフィルタリング
+    - `sentDuringStep` でステップNの後、N+1の前に挿入
+  - **ステップ入力フォーム**: `step.input` が設定された現在ステップに入力欄を表示
+    - 送信後は「送信済み」に切替、リロード時は既存回答をチェックして復元
+  - **開示された回答の表示**: `stepReveals` を監視し、named/anonymous/same_table に応じて表示
 
 ### 3. 参加者ゲーム画面 `/play`
 
@@ -169,7 +221,14 @@ rooms/
     config/
       tableCount: number          // テーブル数
       createdAt: timestamp
-    
+      entryFields/                // カスタムエントリーフィールド定義
+        {index}/
+          id: string              // フィールドID（"name", "school" 等）
+          label: string           // 表示名（"名前", "学校名" 等）
+          type: string            // "text" | "number" | "select"
+          required: boolean       // 必須フラグ
+          options?: string[]      // type="select" の場合の選択肢
+
     state/
       currentStep: number         // 現在の台本ステップ番号
       phase: string               // "waiting" | "playing" | "result" | "break"
@@ -181,13 +240,23 @@ rooms/
           label: string           // 表示名（例: "アイスブレイク ラウンド1"）
           gameType?: string       // "value_match" | "seno" | "streams" | ...
           config?: object         // ゲーム固有の設定
+          display?/               // 参加者表示設定
+            message?: string      // 参加者に表示するメッセージ
+            showTablemates?: boolean // テーブルメイト名を表示するか
+            showFields?: string[] // 表示するフィールドID
+          input?/                 // 参加者入力プロンプト設定
+            prompt: string        // 表示するプロンプト（例: "好きな食べ物は？"）
+            inputType: string     // "text" | "number" | "select"
+            options?: string[]    // inputType="select" の場合の選択肢
     
     players/
       {playerId}/
         name: string
-        tableNumber: number
+        tableNumber: number        // 0 = 未割当、1〜N = テーブル番号
         connected: boolean
         joinedAt: timestamp
+        fields/                    // カスタムフィールドの入力値
+          {fieldId}: string|number // 例: name="田中", school="○○大学", age=22
     
     currentGame/
       type: string                // 現在実行中のゲームタイプ
@@ -213,6 +282,30 @@ rooms/
           {playerId}/
             grid: (number|null)[] // 20マスの配置状態
     
+    messages/                     // 管理者メッセージ
+      {messageId}/
+        id: string
+        text: string
+        target/
+          type: string            // "all" | "table" | "player"
+          tableNumber?: number    // type="table" の場合
+          playerId?: string       // type="player" の場合
+        sentAt: timestamp
+        sentDuringStep: number    // 送信時のcurrentStep（タイムライン並び順用）
+
+    stepResponses/                // ステップ入力の回答
+      {stepIndex}/
+        {playerId}/
+          value: string|number
+          submittedAt: timestamp
+          playerName: string      // 非正規化（表示用）
+          tableNumber: number     // 非正規化（テーブル絞り込み用）
+
+    stepReveals/                  // 回答の開示設定
+      {stepIndex}/
+        mode: string              // "named" | "anonymous" | "admin_only"
+        target: string            // "all" | "same_table"
+
     scores/
       tables/
         {tableNumber}/

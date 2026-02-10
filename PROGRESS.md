@@ -16,17 +16,49 @@
 - [x] ゲーム操作パネル（お題送出、回答締切、結果公開）
 - [x] 参加者モニター（テーブル別表示）
 - [x] ルーム削除機能
+- [x] カスタムエントリーフィールド設定UI（追加・削除・並べ替え・タイプ選択）
+- [x] テーブル割り当てUI（未割当エリア + テーブル別、クリックで割り当て・移動）
+
+### 3. 参加者エントリー画面 (`/?room=XXX`)
+- [x] ルーム情報取得・表示
+- [x] カスタムエントリーフィールドに基づく動的フォーム生成
+- [x] 参加者データのFirebase書き込み（テーブル番号=0: 未割当）
+- [x] エントリー後のリアルタイム表示（テーブル番号・入力情報）
+
+### 4. 参加者タイムライン表示
+- [x] スクロール型タイムラインUI（ステップごとにカードが蓄積）
+- [x] ルーム購読によるステップ進行連動
+- [x] プレイヤー一覧購読によるテーブルメイト情報取得
+- [x] ステップごとの表示設定（StepDisplayConfig: message, showTablemates, showFields）
+- [x] メッセージ中プレースホルダー置換（{tableNumber}, {name}）
+- [x] localStorageによるスナップショット保存・復元（テーブル移動後も前の情報が残る）
+- [x] ステップタイプ別デフォルト表示（entry/break/end等）
+- [x] 新しいカード追加時の自動スクロール
+
+### 5. 管理者画面: ステップ表示設定
+- [x] 台本エディタに参加者表示設定フォーム追加（メッセージ・テーブルメイト・フィールド選択）
+- [x] ステップ詳細パネルに表示設定の読み取り表示
+
+### 6. メッセージ送受信 & ステップ割り込み
+- [x] 型定義追加（AdminMessage, MessageTarget, StepInputConfig, StepResponse, StepInputReveal 等）
+- [x] Firebase関数追加（sendAdminMessage, subscribeToMessages, submitStepResponse, subscribeToStepResponses, setStepReveal, clearStepReveal, insertStepAfterCurrent）
+- [x] ステップ割り込み: 進行コントロール横に「割り込み」ボタン + インラインフォーム
+- [x] 管理者メッセージ送信: MessageSender コンポーネント（ターゲット: 全員/テーブル/個人、送信履歴）
+- [x] ステップ入力設定: 個別編集/台本編集にプロンプト設定UI追加
+- [x] 回答閲覧・開示パネル（StepResponsesPanel）: 回答一覧 + 6種開示ボタン
+- [x] 参加者タイムラインにメッセージカード（黄色）統合表示（ターゲットフィルタ付き）
+- [x] 参加者入力フォーム（StepInputForm）: 送信済み復元対応
+- [x] 開示された回答の表示（RevealedResponses）: named/anonymous/same_table 対応
+- [x] 進行コントロールのスティッキー固定 + 現在ステップ表示
+- [x] 管理画面レイアウト切替（全パネル / 進行集中モード）
 
 ## 未実装（次のステップ）
 
 ### 管理者画面の追加機能
-- [ ] 台本エディタ（ステップの追加・削除・編集・並び替え）
 - [ ] プリセットお題集の選択UI
-- [ ] 回答一覧表示
 - [ ] スコア集計・表示
 
-### 参加者画面 (`/`, `/play`)
-- [ ] エントリー画面（名前・テーブル番号入力）
+### 参加者画面 (`/play`)
 - [ ] ゲーム画面（お題表示、回答入力）
 - [ ] 結果表示画面
 - [ ] 歓談タイム画面
@@ -38,16 +70,23 @@
 src/
 ├── app/
 │   ├── layout.tsx          # 共通レイアウト
-│   ├── page.tsx            # トップ（参加者エントリー予定）
+│   ├── page.tsx            # トップ + 参加者エントリー + タイムライン（?room=XXX）
 │   ├── globals.css         # グローバルスタイル
 │   └── admin/
-│       └── page.tsx        # 管理者画面
+│       ├── page.tsx        # /admin リダイレクト
+│       └── [roomId]/
+│           └── page.tsx    # 管理者画面（タブ切替: 全パネル/進行集中）
 ├── lib/
 │   ├── firebase.ts         # Firebase初期化
-│   └── room.ts             # ルーム操作関数
+│   └── room.ts             # ルーム操作関数（メッセージ・ステップ回答・割り込み含む）
 ├── types/
-│   └── room.ts             # 型定義
-└── components/             # （まだ空）
+│   └── room.ts             # 型定義（AdminMessage, StepInputConfig, StepResponse 等）
+└── components/
+    └── admin/
+        ├── ScenarioPanel.tsx   # 台本・進行（割り込み・入力設定・回答パネル含む）
+        ├── MessageSender.tsx   # 管理者メッセージ送信
+        ├── RoomInfoPanel.tsx   # ルーム情報・QR・エントリーフィールド設定
+        └── PlayersPanel.tsx    # 参加者モニター・テーブル割り当て
 ```
 
 ## 環境設定
