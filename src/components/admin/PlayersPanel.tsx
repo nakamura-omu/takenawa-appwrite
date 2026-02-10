@@ -21,11 +21,23 @@ export default function PlayersPanel({
   onAssignTable,
   onKickPlayer,
 }: PlayersPanelProps) {
+  const onlineCount = players
+    ? Object.values(players).filter((p) => p.connected).length
+    : 0;
+  const totalCount = players ? Object.keys(players).length : 0;
+
   return (
     <section className="bg-gray-900 rounded-lg p-4">
-      <h2 className="text-lg font-semibold mb-4 border-b border-gray-700 pb-2">
-        参加者・テーブル割り当て
-      </h2>
+      <div className="flex items-center justify-between mb-4 border-b border-gray-700 pb-2">
+        <h2 className="text-lg font-semibold">
+          参加者・テーブル割り当て
+        </h2>
+        {totalCount > 0 && (
+          <span className="text-xs text-gray-400">
+            <span className="text-green-400">{onlineCount}</span>/{totalCount}人 接続中
+          </span>
+        )}
+      </div>
 
       {!players || Object.keys(players).length === 0 ? (
         <p className="text-gray-500 text-sm">参加者待ち...</p>
@@ -44,7 +56,10 @@ export default function PlayersPanel({
                       onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
                       className="px-2 py-1 rounded text-sm bg-yellow-900/30 text-yellow-300 cursor-pointer hover:bg-yellow-900/50 transition flex items-center justify-between"
                     >
-                      <span>{player.name}</span>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
+                        {player.name}
+                      </span>
                       <span className="text-xs text-yellow-500">割当 ▾</span>
                     </div>
                     {assigningPlayer === id && (
@@ -101,7 +116,10 @@ export default function PlayersPanel({
                           : "bg-gray-800 text-gray-500 hover:bg-gray-700"
                       }`}
                     >
-                      <span>{player.name}</span>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
+                        {player.name}
+                      </span>
                       <span className="text-xs text-gray-500">移動 ▾</span>
                     </div>
                     {assigningPlayer === id && (
@@ -150,7 +168,10 @@ export default function PlayersPanel({
                       onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
                       className="px-2 py-1 rounded text-sm bg-gray-800 text-gray-500 cursor-pointer hover:bg-gray-700 transition flex items-center justify-between"
                     >
-                      <span>{player.name}</span>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
+                        {player.name}
+                      </span>
                       <span className="text-xs text-gray-600">移動 ▾</span>
                     </div>
                     {assigningPlayer === id && (

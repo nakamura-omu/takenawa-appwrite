@@ -52,6 +52,17 @@
 - [x] 進行コントロールのスティッキー固定 + 現在ステップ表示
 - [x] 管理画面レイアウト切替（全パネル / 進行集中モード）
 
+### 7. 認証・プレゼンス・ルーム情報改善
+- [x] Firebase Anonymous Authentication 導入（書き込みに `auth != null` を要求）
+- [x] マイルーム機能: creatorUid に基づくルーム一覧表示（トップページ上部）
+- [x] 管理者画面の自動認証: creatorUid 一致でパスワード不要
+- [x] 主催者名設定: メッセージカードの送信者名を設定可能（未設定時「主催より」）
+- [x] ルーム情報パネル再構成: QR+ID / イベント設定（全項目インライン編集）/ エントリー項目
+- [x] イベント名・日時の編集機能追加
+- [x] プレゼンス（接続状態）リアルタイム追跡: `.info/connected` + `onDisconnect()` 活用
+- [x] 参加者リストに接続状態ドット表示（緑=接続中 / 灰=切断）
+- [x] 接続中カウンター表示（N/M人 接続中）
+
 ## 未実装（次のステップ）
 
 ### 管理者画面の追加機能
@@ -77,8 +88,8 @@ src/
 │       └── [roomId]/
 │           └── page.tsx    # 管理者画面（タブ切替: 全パネル/進行集中）
 ├── lib/
-│   ├── firebase.ts         # Firebase初期化
-│   └── room.ts             # ルーム操作関数（メッセージ・ステップ回答・割り込み含む）
+│   ├── firebase.ts         # Firebase初期化 + Anonymous Auth + プレゼンス
+│   └── room.ts             # ルーム操作関数（メッセージ・ステップ回答・割り込み・プレゼンス含む）
 ├── types/
 │   └── room.ts             # 型定義（AdminMessage, StepInputConfig, StepResponse 等）
 └── components/
@@ -97,16 +108,16 @@ src/
 ### Firebase設定
 1. Firebase Console でプロジェクト作成済み
 2. Realtime Database 有効化済み
-3. セキュリティルール: 開発用に読み書き許可
+3. Anonymous Authentication 有効化済み
+4. セキュリティルール:
 
 ```json
 {
   "rules": {
     "rooms": {
-      "$roomId": {
-        ".read": true,
-        ".write": true
-      }
+      ".read": true,
+      ".write": "auth != null",
+      ".indexOn": ["config/creatorUid"]
     }
   }
 }

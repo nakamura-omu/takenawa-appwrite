@@ -1,5 +1,6 @@
 import { initializeApp, getApps, FirebaseApp } from "firebase/app";
 import { getDatabase, Database } from "firebase/database";
+import { getAuth, signInAnonymously, onAuthStateChanged, Auth, User } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -32,5 +33,32 @@ export function getDb(): Database {
 
 // 後方互換性のため
 export const db = typeof window !== "undefined" ? getDb() : (null as unknown as Database);
+
+// Anonymous Auth
+let _auth: Auth | null = null;
+
+export function getFirebaseAuth(): Auth {
+  if (!_auth) {
+    const app = getFirebaseApp();
+    _auth = getAuth(app);
+  }
+  return _auth;
+}
+
+// 匿名ログイン（既にログイン済みならそのUIDを返す）
+export async function ensureAnonymousUser(): Promise<string> {
+  const auth = getFirebaseAuth();
+  if (auth.currentUser) {
+    return auth.currentUser.uid;
+  }
+  const credential = await signInAnonymously(auth);
+  return credential.user.uid;
+}
+
+// Auth状態の監視
+export function onAuthReady(callback: (user: User | null) => void): () => void {
+  const auth = getFirebaseAuth();
+  return onAuthStateChanged(auth, callback);
+}
 
 export default getFirebaseApp;

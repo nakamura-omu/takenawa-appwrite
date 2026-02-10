@@ -1,4 +1,4 @@
-import { ref, set, get, update, onValue, off, push } from "firebase/database";
+import { ref, set, get, update, onValue, off, push, query, orderByChild, equalTo, onDisconnect } from "firebase/database";
 import { getDb } from "./firebase";
 import {
   Room,
@@ -38,6 +38,7 @@ export async function createRoom(
   eventName: string,
   eventDate: string,
   adminPassword: string,
+  creatorUid?: string,
 ): Promise<string> {
   const roomId = generateRoomId();
   const roomRef = ref(getDb(), `rooms/${roomId}`);
@@ -49,6 +50,7 @@ export async function createRoom(
       tableCount: 6,
       createdAt: Date.now(),
       adminPassword,
+      creatorUid,
       entryFields: [
         { id: "name", label: "名前", type: "text", required: true },
       ],
@@ -71,6 +73,19 @@ export async function getRoom(roomId: string): Promise<Room | null> {
   const roomRef = ref(getDb(), `rooms/${roomId}`);
   const snapshot = await get(roomRef);
   return snapshot.exists() ? snapshot.val() : null;
+}
+
+// UIDでルーム一覧を取得（マイルーム）
+export async function getRoomsByCreator(uid: string): Promise<{ id: string; room: Room }[]> {
+  const roomsRef = ref(getDb(), "rooms");
+  const q = query(roomsRef, orderByChild("config/creatorUid"), equalTo(uid));
+  const snapshot = await get(q);
+  if (!snapshot.exists()) return [];
+  const results: { id: string; room: Room }[] = [];
+  snapshot.forEach((child) => {
+    results.push({ id: child.key!, room: child.val() });
+  });
+  return results.sort((a, b) => b.room.config.createdAt - a.room.config.createdAt);
 }
 
 // ルーム削除
@@ -224,6 +239,24 @@ export function subscribeToPlayers(
 export async function updateTableCount(roomId: string, count: number): Promise<void> {
   const configRef = ref(getDb(), `rooms/${roomId}/config/tableCount`);
   await set(configRef, count);
+}
+
+// 管理者名の更新
+export async function updateAdminName(roomId: string, name: string): Promise<void> {
+  const nameRef = ref(getDb(), `rooms/${roomId}/config/adminName`);
+  await set(nameRef, name || null);
+}
+
+// イベント名の更新
+export async function updateEventName(roomId: string, name: string): Promise<void> {
+  const nameRef = ref(getDb(), `rooms/${roomId}/config/eventName`);
+  await set(nameRef, name);
+}
+
+// イベント日時の更新
+export async function updateEventDate(roomId: string, date: string): Promise<void> {
+  const dateRef = ref(getDb(), `rooms/${roomId}/config/eventDate`);
+  await set(dateRef, date);
 }
 
 // エントリーフィールドの更新
@@ -382,6 +415,25 @@ export async function insertStepAfterCurrent(
 
   const roomRef = ref(getDb(), `rooms/${roomId}`);
   await update(roomRef, updates);
+}
+
+// プレゼンス（接続状態）の登録
+export function registerPresence(roomId: string, playerId: string): () => void {
+  const db = getDb();
+  const connectedRef = ref(db, ".info/connected");
+  const playerConnRef = ref(db, `rooms/${roomId}/players/${playerId}/connected`);
+
+  const unsubscribe = onValue(connectedRef, (snap) => {
+    if (snap.val() === true) {
+      onDisconnect(playerConnRef).set(false);
+      set(playerConnRef, true);
+    }
+  });
+
+  return () => {
+    unsubscribe();
+    set(playerConnRef, false);
+  };
 }
 
 // テーブルシャッフル（割り当て済み参加者をランダムに再配分）

@@ -10,8 +10,12 @@ import {
   updateEntryFields,
   updatePlayerTable,
   removePlayer,
+  updateAdminName,
+  updateEventName,
+  updateEventDate,
 } from "@/lib/room";
 import { Room, Player, EntryField } from "@/types/room";
+import { ensureAnonymousUser } from "@/lib/firebase";
 import RoomInfoPanel from "@/components/admin/RoomInfoPanel";
 import ScenarioPanel from "@/components/admin/ScenarioPanel";
 import PlayersPanel from "@/components/admin/PlayersPanel";
@@ -30,10 +34,6 @@ export default function AdminRoomPage() {
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState(false);
 
-  // テーブル数編集
-  const [editingTableCount, setEditingTableCount] = useState(false);
-  const [tableCountInput, setTableCountInput] = useState(6);
-
   // エントリーフィールド編集
   const [editingFields, setEditingFields] = useState(false);
   const [fieldsDraft, setFieldsDraft] = useState<EntryField[]>([]);
@@ -41,7 +41,7 @@ export default function AdminRoomPage() {
   // テーブル割り当て用
   const [assigningPlayer, setAssigningPlayer] = useState<string | null>(null);
 
-  // sessionStorageチェック
+  // sessionStorageチェック + UID認証
   useEffect(() => {
     if (typeof window !== "undefined") {
       const stored = sessionStorage.getItem(`admin_${roomId}`);
@@ -50,6 +50,26 @@ export default function AdminRoomPage() {
       }
     }
   }, [roomId]);
+
+  // creatorUid 一致で自動認証
+  useEffect(() => {
+    if (authenticated || !room) return;
+    if (!room.config.creatorUid) return;
+    (async () => {
+      try {
+        const uid = await ensureAnonymousUser();
+        if (uid === room.config.creatorUid) {
+          setAuthenticated(true);
+          sessionStorage.setItem(`admin_${roomId}`, "1");
+        }
+      } catch { /* Auth未有効 */ }
+    })();
+  }, [room, authenticated, roomId]);
+
+  // 匿名ログイン（セキュリティルールで auth != null が必要）
+  useEffect(() => {
+    ensureAnonymousUser().catch(() => {});
+  }, []);
 
   // ルームの購読
   useEffect(() => {
@@ -60,9 +80,6 @@ export default function AdminRoomPage() {
         setNotFound(true);
       }
       setRoom(data);
-      if (data) {
-        setTableCountInput(data.config.tableCount);
-      }
       setLoading(false);
     });
     const unsubPlayers = subscribeToPlayers(roomId, setPlayers);
@@ -93,9 +110,18 @@ export default function AdminRoomPage() {
   };
 
   // テーブル数保存
-  const handleSaveTableCount = async () => {
-    await updateTableCount(roomId, tableCountInput);
-    setEditingTableCount(false);
+  const handleSaveTableCount = async (count: number) => {
+    await updateTableCount(roomId, count);
+  };
+
+  // イベント名保存
+  const handleSaveEventName = async (name: string) => {
+    if (name) await updateEventName(roomId, name);
+  };
+
+  // イベント日時保存
+  const handleSaveEventDate = async (date: string) => {
+    if (date) await updateEventDate(roomId, date);
   };
 
   // エントリーフィールド編集開始
@@ -141,6 +167,11 @@ export default function AdminRoomPage() {
   const handleAssignTable = async (playerId: string, tableNumber: number) => {
     await updatePlayerTable(roomId, playerId, tableNumber);
     setAssigningPlayer(null);
+  };
+
+  // 管理者名保存
+  const handleSaveAdminName = async (name: string) => {
+    await updateAdminName(roomId, name);
   };
 
   // 参加者キック
@@ -279,10 +310,9 @@ export default function AdminRoomPage() {
               players={players}
               participantUrl={participantUrl}
               isBeforeEntry={isBeforeEntry}
-              editingTableCount={editingTableCount}
-              setEditingTableCount={setEditingTableCount}
-              tableCountInput={tableCountInput}
-              setTableCountInput={setTableCountInput}
+              onSaveEventName={handleSaveEventName}
+              onSaveEventDate={handleSaveEventDate}
+              onSaveAdminName={handleSaveAdminName}
               onSaveTableCount={handleSaveTableCount}
               editingFields={editingFields}
               setEditingFields={setEditingFields}

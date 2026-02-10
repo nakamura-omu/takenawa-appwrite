@@ -397,73 +397,6 @@ export default function ScenarioPanel({
             </div>
           </div>
 
-          {/* 割り込みフォーム */}
-          {showInterrupt && (
-            <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg space-y-2">
-              <p className="text-xs font-semibold text-yellow-400">割り込みステップ挿入（Step {room.state.currentStep + 1} の後に追加）</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">ラベル</label>
-                  <input
-                    type="text"
-                    value={interruptLabel}
-                    onChange={(e) => setInterruptLabel(e.target.value)}
-                    placeholder="ステップ名"
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">タイプ</label>
-                  <select
-                    value={interruptType}
-                    onChange={(e) => setInterruptType(e.target.value as StepType)}
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
-                  >
-                    <option value="break">歓談</option>
-                    <option value="entry">受付</option>
-                    <option value="table_game">テーブルゲーム</option>
-                    <option value="whole_game">全体ゲーム</option>
-                    <option value="result">結果発表</option>
-                    <option value="end">閉会</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">メッセージ（任意）</label>
-                <input
-                  type="text"
-                  value={interruptMessage}
-                  onChange={(e) => setInterruptMessage(e.target.value)}
-                  placeholder="参加者に表示するメッセージ"
-                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-xs text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={interruptAutoAdvance}
-                  onChange={(e) => setInterruptAutoAdvance(e.target.checked)}
-                />
-                挿入後すぐに進む
-              </label>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleInsertInterrupt}
-                  disabled={!interruptLabel.trim()}
-                  className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 rounded text-sm font-semibold transition"
-                >
-                  挿入
-                </button>
-                <button
-                  onClick={() => setShowInterrupt(false)}
-                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition"
-                >
-                  閉じる
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* ステップ一覧 */}
           <div className="space-y-2 mb-6">
             {steps.map((step, index) => {
@@ -583,6 +516,73 @@ export default function ScenarioPanel({
                           </button>
                         </>
                       )}
+                    </div>
+                  )}
+
+                  {/* 割り込みフォーム（現在ステップの直下に表示） */}
+                  {index === room.state.currentStep && showInterrupt && (
+                    <div className="mt-2 p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg space-y-2">
+                      <p className="text-xs font-semibold text-yellow-400">割り込みステップ挿入（Step {room.state.currentStep + 1} の後に追加）</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">ラベル</label>
+                          <input
+                            type="text"
+                            value={interruptLabel}
+                            onChange={(e) => setInterruptLabel(e.target.value)}
+                            placeholder="ステップ名"
+                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">タイプ</label>
+                          <select
+                            value={interruptType}
+                            onChange={(e) => setInterruptType(e.target.value as StepType)}
+                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
+                          >
+                            <option value="break">歓談</option>
+                            <option value="entry">受付</option>
+                            <option value="table_game">テーブルゲーム</option>
+                            <option value="whole_game">全体ゲーム</option>
+                            <option value="result">結果発表</option>
+                            <option value="end">閉会</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">メッセージ（任意）</label>
+                        <input
+                          type="text"
+                          value={interruptMessage}
+                          onChange={(e) => setInterruptMessage(e.target.value)}
+                          placeholder="参加者に表示するメッセージ"
+                          className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
+                        />
+                      </div>
+                      <label className="flex items-center gap-2 text-xs text-gray-400">
+                        <input
+                          type="checkbox"
+                          checked={interruptAutoAdvance}
+                          onChange={(e) => setInterruptAutoAdvance(e.target.checked)}
+                        />
+                        挿入後すぐに進む
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleInsertInterrupt}
+                          disabled={!interruptLabel.trim()}
+                          className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 rounded text-sm font-semibold transition"
+                        >
+                          挿入
+                        </button>
+                        <button
+                          onClick={() => setShowInterrupt(false)}
+                          className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition"
+                        >
+                          閉じる
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

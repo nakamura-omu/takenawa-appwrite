@@ -74,6 +74,8 @@ export interface RoomConfig {
   tableCount: number;
   createdAt: number;
   adminPassword: string;
+  adminName?: string;   // 管理者名（メッセージ送信者名として表示）
+  creatorUid?: string;  // Anonymous Auth UID（マイルーム復元用）
   entryFields: EntryField[];  // 参加者入力フィールド定義
 }
 

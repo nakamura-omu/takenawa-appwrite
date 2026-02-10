@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "宴会ゲーム - Takenawa",
+  title: "TAKENAWA",
   description: "幹事進行型の宴会ゲームアプリ",
 };
 

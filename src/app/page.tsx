@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createRoom, getRoom, addPlayer, subscribeToPlayer, subscribeToRoom, subscribeToPlayers, subscribeToMessages, submitStepResponse } from "@/lib/room";
+import { createRoom, getRoom, addPlayer, subscribeToPlayer, subscribeToRoom, subscribeToPlayers, subscribeToMessages, submitStepResponse, getRoomsByCreator, registerPresence } from "@/lib/room";
+import { ensureAnonymousUser } from "@/lib/firebase";
 import { Room, Player, EntryField, ScenarioStep, StepDisplayConfig, TimelineSnapshot, AdminMessage, StepResponse, StepInputReveal } from "@/types/room";
 
 // メッセージ中のプレースホルダー置換
@@ -174,13 +175,13 @@ function TimelineCard({
 }
 
 // 管理者メッセージカード
-function MessageCard({ message }: { message: AdminMessage }) {
+function MessageCard({ message, senderName }: { message: AdminMessage; senderName?: string }) {
   return (
     <div className="relative pl-6 pb-6">
       <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
       <div className="absolute left-0.5 top-1.5 w-3 h-3 rounded-full border-2 border-gray-950 bg-yellow-500" />
       <div className="bg-yellow-900/20 rounded-lg p-4 border border-yellow-700/50">
-        <p className="text-xs text-yellow-400 mb-1">お知らせ</p>
+        <p className="text-xs text-yellow-400 mb-1">{senderName || "主催より"}</p>
         <p className="text-sm font-medium text-yellow-200 whitespace-pre-wrap">{message.text}</p>
       </div>
     </div>
@@ -323,6 +324,8 @@ function EntryForm({ roomId }: { roomId: string }) {
   useEffect(() => {
     (async () => {
       try {
+        // 匿名ログイン（セキュリティルールで auth != null が必要）
+        try { await ensureAnonymousUser(); } catch { /* Auth未有効でも続行 */ }
         const data = await getRoom(roomId);
         if (data) {
           setRoom(data);
@@ -350,10 +353,10 @@ function EntryForm({ roomId }: { roomId: string }) {
     })();
   }, [roomId]);
 
-  // 自分のプレイヤーデータをリアルタイム購読
+  // 自分のプレイヤーデータをリアルタイム購読 + プレゼンス登録
   useEffect(() => {
     if (!playerId) return;
-    const unsub = subscribeToPlayer(roomId, playerId, (data) => {
+    const unsubPlayer = subscribeToPlayer(roomId, playerId, (data) => {
       if (data) {
         setPlayerData(data);
       } else {
@@ -362,7 +365,11 @@ function EntryForm({ roomId }: { roomId: string }) {
         setPlayerData(null);
       }
     });
-    return unsub;
+    const unsubPresence = registerPresence(roomId, playerId);
+    return () => {
+      unsubPlayer();
+      unsubPresence();
+    };
   }, [roomId, playerId]);
 
   // ルーム全体をリアルタイム購読（ステップ進行を検知）
@@ -598,7 +605,7 @@ function EntryForm({ roomId }: { roomId: string }) {
           <div className="pb-8">
             {timelineItems.map((item, i) => {
               if (item.kind === "message") {
-                return <MessageCard key={`msg-${item.message.id}`} message={item.message} />;
+                return <MessageCard key={`msg-${item.message.id}`} message={item.message} senderName={room.config.adminName} />;
               }
               const idx = item.index;
               return (
@@ -733,6 +740,26 @@ function HomeContent() {
   const [isCreating, setIsCreating] = useState(false);
   const [joinRoomId, setJoinRoomId] = useState("");
 
+  // マイルーム
+  const [myRooms, setMyRooms] = useState<{ id: string; room: Room }[]>([]);
+  const [myRoomsLoading, setMyRoomsLoading] = useState(true);
+
+  // 匿名ログイン + マイルーム取得
+  useEffect(() => {
+    if (roomParam) return; // エントリーフォーム表示時はスキップ
+    (async () => {
+      try {
+        const uid = await ensureAnonymousUser();
+        const rooms = await getRoomsByCreator(uid);
+        setMyRooms(rooms);
+      } catch {
+        // Auth未有効でもエラーにしない
+      } finally {
+        setMyRoomsLoading(false);
+      }
+    })();
+  }, [roomParam]);
+
   // ?room=XXX がある場合はエントリーフォームを表示
   if (roomParam) {
     return <EntryForm roomId={roomParam} />;
@@ -742,7 +769,9 @@ function HomeContent() {
     if (!eventName.trim() || !eventDate || !adminPassword) return;
     setIsCreating(true);
     try {
-      const id = await createRoom(eventName.trim(), eventDate, adminPassword);
+      let uid: string | undefined;
+      try { uid = await ensureAnonymousUser(); } catch { /* Auth未有効 */ }
+      const id = await createRoom(eventName.trim(), eventDate, adminPassword, uid);
       // パスワード認証済みとしてsessionStorageに保存
       sessionStorage.setItem(`admin_${id}`, "1");
       router.push(`/admin/${id}`);
@@ -770,6 +799,40 @@ function HomeContent() {
       </div>
 
       <div className="w-full max-w-md space-y-8">
+        {/* マイルーム */}
+        {!myRoomsLoading && myRooms.length > 0 && (
+          <section className="bg-gray-900 rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">マイルーム</h2>
+            <p className="text-sm text-gray-400 mb-3">
+              このブラウザで作成したルーム
+            </p>
+            <div className="space-y-2">
+              {myRooms.map(({ id, room: r }) => (
+                <div
+                  key={id}
+                  className="flex items-center justify-between bg-gray-800 rounded-lg p-3"
+                >
+                  <div>
+                    <p className="font-medium text-sm">{r.config.eventName}</p>
+                    <p className="text-xs text-gray-500">
+                      {r.config.eventDate} / {id}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      sessionStorage.setItem(`admin_${id}`, "1");
+                      router.push(`/admin/${id}`);
+                    }}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs font-semibold transition"
+                  >
+                    管理画面
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* 宴会をつくる */}
         <section className="bg-gray-900 rounded-lg p-6">
           <h2 className="text-xl font-semibold mb-4">宴会をつくる</h2>
@@ -858,6 +921,7 @@ function HomeContent() {
             管理画面に入る →
           </button>
         </section>
+
       </div>
     </main>
   );
