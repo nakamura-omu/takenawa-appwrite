@@ -1,6 +1,7 @@
 "use client";
 
-import { Room, Player } from "@/types/room";
+import { useState } from "react";
+import { Room, Player, EntryField } from "@/types/room";
 
 export interface PlayersPanelProps {
   room: Room;
@@ -21,10 +22,15 @@ export default function PlayersPanel({
   onAssignTable,
   onKickPlayer,
 }: PlayersPanelProps) {
+  const [detailPlayerId, setDetailPlayerId] = useState<string | null>(null);
+
   const onlineCount = players
     ? Object.values(players).filter((p) => p.connected).length
     : 0;
   const totalCount = players ? Object.keys(players).length : 0;
+
+  const detailPlayer = detailPlayerId && players ? players[detailPlayerId] : null;
+  const entryFields = room.config.entryFields || [];
 
   return (
     <section className="bg-gray-900 rounded-lg p-4">
@@ -53,14 +59,26 @@ export default function PlayersPanel({
                 {playersByTable[0].map(({ id, player }) => (
                   <div key={id} className="relative">
                     <div
-                      onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
-                      className="px-2 py-1 rounded text-sm bg-yellow-900/30 text-yellow-300 cursor-pointer hover:bg-yellow-900/50 transition flex items-center justify-between"
+                      className="px-2 py-1 rounded text-sm bg-yellow-900/30 text-yellow-300 flex items-center justify-between"
                     >
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
                       </span>
-                      <span className="text-xs text-yellow-500">割当 ▾</span>
+                      <span className="flex gap-1">
+                        <button
+                          onClick={() => setDetailPlayerId(detailPlayerId === id ? null : id)}
+                          className="text-xs text-blue-400 hover:text-blue-300"
+                        >
+                          詳細
+                        </button>
+                        <button
+                          onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
+                          className="text-xs text-yellow-500 hover:text-yellow-300"
+                        >
+                          割当 ▾
+                        </button>
+                      </span>
                     </div>
                     {assigningPlayer === id && (
                       <div className="mt-1 bg-gray-800 border border-gray-600 rounded p-2 flex flex-wrap gap-1">
@@ -109,18 +127,30 @@ export default function PlayersPanel({
                 {playersByTable[tableNum]?.map(({ id, player }) => (
                   <div key={id} className="relative">
                     <div
-                      onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
-                      className={`px-2 py-1 rounded text-sm cursor-pointer transition flex items-center justify-between ${
+                      className={`px-2 py-1 rounded text-sm flex items-center justify-between ${
                         player.connected
-                          ? "bg-green-900/30 text-green-300 hover:bg-green-900/50"
-                          : "bg-gray-800 text-gray-500 hover:bg-gray-700"
+                          ? "bg-green-900/30 text-green-300"
+                          : "bg-gray-800 text-gray-500"
                       }`}
                     >
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
                       </span>
-                      <span className="text-xs text-gray-500">移動 ▾</span>
+                      <span className="flex gap-1">
+                        <button
+                          onClick={() => setDetailPlayerId(detailPlayerId === id ? null : id)}
+                          className="text-xs text-blue-400 hover:text-blue-300"
+                        >
+                          詳細
+                        </button>
+                        <button
+                          onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
+                          className="text-xs text-gray-500 hover:text-gray-300"
+                        >
+                          移動 ▾
+                        </button>
+                      </span>
                     </div>
                     {assigningPlayer === id && (
                       <div className="mt-1 bg-gray-800 border border-gray-600 rounded p-2 flex flex-wrap gap-1">
@@ -165,14 +195,26 @@ export default function PlayersPanel({
                 {playersByTable[-1].map(({ id, player }) => (
                   <div key={id} className="relative">
                     <div
-                      onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
-                      className="px-2 py-1 rounded text-sm bg-gray-800 text-gray-500 cursor-pointer hover:bg-gray-700 transition flex items-center justify-between"
+                      className="px-2 py-1 rounded text-sm bg-gray-800 text-gray-500 flex items-center justify-between"
                     >
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
                       </span>
-                      <span className="text-xs text-gray-600">移動 ▾</span>
+                      <span className="flex gap-1">
+                        <button
+                          onClick={() => setDetailPlayerId(detailPlayerId === id ? null : id)}
+                          className="text-xs text-blue-400 hover:text-blue-300"
+                        >
+                          詳細
+                        </button>
+                        <button
+                          onClick={() => setAssigningPlayer(assigningPlayer === id ? null : id)}
+                          className="text-xs text-gray-600 hover:text-gray-400"
+                        >
+                          移動 ▾
+                        </button>
+                      </span>
                     </div>
                     {assigningPlayer === id && (
                       <div className="mt-1 bg-gray-800 border border-gray-600 rounded p-2 flex flex-wrap gap-1">
@@ -206,6 +248,152 @@ export default function PlayersPanel({
           )}
         </div>
       )}
+
+      {/* プレイヤー詳細モーダル */}
+      {detailPlayer && detailPlayerId && (
+        <PlayerDetailModal
+          playerId={detailPlayerId}
+          player={detailPlayer}
+          room={room}
+          entryFields={entryFields}
+          onClose={() => setDetailPlayerId(null)}
+        />
+      )}
     </section>
+  );
+}
+
+// プレイヤー詳細モーダル
+function PlayerDetailModal({
+  playerId,
+  player,
+  room,
+  entryFields,
+  onClose,
+}: {
+  playerId: string;
+  player: Player;
+  room: Room;
+  entryFields: EntryField[];
+  onClose: () => void;
+}) {
+  const steps = room.scenario?.steps || [];
+
+  // アンケート回答を収集
+  const surveyResponses: { stepIndex: number; label: string; question: string; response: string | number }[] = [];
+  if (room.stepResponses) {
+    Object.entries(room.stepResponses).forEach(([stepIdxStr, responses]) => {
+      const stepIdx = Number(stepIdxStr);
+      const step = steps[stepIdx];
+      if (step?.type === "survey" && step.survey && responses[playerId]) {
+        surveyResponses.push({
+          stepIndex: stepIdx,
+          label: step.label,
+          question: step.survey.question,
+          response: responses[playerId].value,
+        });
+      }
+    });
+  }
+
+  // ゲーム回答を収集
+  const gameAnswers: { questionId: string; questionText: string; answer: string }[] = [];
+  if (room.currentGame?.questions && room.currentGame?.answers) {
+    Object.entries(room.currentGame.questions).forEach(([qId, q]) => {
+      const playerAnswer = room.currentGame?.answers?.[qId]?.[playerId];
+      if (playerAnswer) {
+        gameAnswers.push({
+          questionId: qId,
+          questionText: q.text,
+          answer: playerAnswer.text,
+        });
+      }
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-900 rounded-lg max-w-md w-full max-h-[80vh] overflow-y-auto">
+        <div className="sticky top-0 bg-gray-900 border-b border-gray-700 p-4 flex items-center justify-between">
+          <h3 className="text-lg font-semibold">{player.name} の詳細</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">×</button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {/* 基本情報 */}
+          <div>
+            <h4 className="text-sm font-semibold text-gray-400 mb-2">基本情報</h4>
+            <div className="bg-gray-800 rounded p-3 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">名前</span>
+                <span className="text-white">{player.name}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">テーブル</span>
+                <span className="text-white">
+                  {player.tableNumber > 0 ? `テーブル ${player.tableNumber}` : player.tableNumber === -1 ? "テーブル外" : "未割当"}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">接続状態</span>
+                <span className={player.connected ? "text-green-400" : "text-gray-500"}>
+                  {player.connected ? "接続中" : "オフライン"}
+                </span>
+              </div>
+              {/* エントリーフィールド */}
+              {entryFields.filter(f => f.id !== "name").map((field) => (
+                <div key={field.id} className="flex justify-between text-sm">
+                  <span className="text-gray-500">{field.label}</span>
+                  <span className="text-white">{player.fields?.[field.id] ?? "未入力"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* アンケート回答 */}
+          {surveyResponses.length > 0 && (
+            <div>
+              <h4 className="text-sm font-semibold text-gray-400 mb-2">アンケート回答（{surveyResponses.length}件）</h4>
+              <div className="space-y-2">
+                {surveyResponses.map((sr, i) => (
+                  <div key={i} className="bg-gray-800 rounded p-3">
+                    <p className="text-xs text-gray-500 mb-1">{sr.label}: {sr.question}</p>
+                    <p className="text-sm text-white">{sr.response}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ゲーム回答 */}
+          {gameAnswers.length > 0 && (
+            <div>
+              <h4 className="text-sm font-semibold text-gray-400 mb-2">ゲーム回答（{gameAnswers.length}件）</h4>
+              <div className="space-y-2">
+                {gameAnswers.map((ga, i) => (
+                  <div key={i} className="bg-gray-800 rounded p-3">
+                    <p className="text-xs text-gray-500 mb-1">{ga.questionText}</p>
+                    <p className="text-sm text-white">{ga.answer}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {surveyResponses.length === 0 && gameAnswers.length === 0 && (
+            <p className="text-sm text-gray-500 text-center py-4">まだ回答がありません</p>
+          )}
+        </div>
+
+        <div className="border-t border-gray-700 p-4">
+          <button
+            onClick={onClose}
+            className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition"
+          >
+            閉じる
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -196,31 +196,69 @@ export async function startGame(
   await setPhase(roomId, "playing");
 }
 
-// お題の送出
+// お題の送出（ログ形式で蓄積）
 export async function sendQuestion(
   roomId: string,
   text: string,
-  timeLimit: number = 30
+  timeLimit: number = 30,
+  inputType: "text" | "number" | "select" = "text",
+  options?: string[],
+  presetIndex?: number // 事前設定お題のインデックス（送出済み追跡用）
 ): Promise<void> {
-  const questionRef = ref(getDb(), `rooms/${roomId}/currentGame/question`);
-  const question: Question = {
-    text,
-    timeLimit,
-    status: "open",
+  const roomRef = ref(getDb(), `rooms/${roomId}`);
+  const questionId = `q_${Date.now()}`;
+
+  // Firebase は undefined を受け付けないので、options は select 時のみ含める
+  const question: Question = inputType === "select" && options
+    ? { text, timeLimit, status: "open", inputType, options, sentAt: Date.now() }
+    : { text, timeLimit, status: "open", inputType, sentAt: Date.now() };
+
+  const updates: Record<string, unknown> = {
+    [`currentGame/questions/${questionId}`]: question,
+    "currentGame/activeQuestionId": questionId,
   };
-  await set(questionRef, question);
+
+  // 事前設定お題の場合、送出済みリストに追加
+  if (presetIndex !== undefined) {
+    const room = await getRoom(roomId);
+    const currentSent = room?.currentGame?.sentQuestionIndices || [];
+    if (!currentSent.includes(presetIndex)) {
+      updates["currentGame/sentQuestionIndices"] = [...currentSent, presetIndex];
+    }
+  }
+
+  await update(roomRef, updates);
 }
 
-// 回答の締切
+// 回答の締切（アクティブなお題）
 export async function closeQuestion(roomId: string): Promise<void> {
-  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/question/status`);
+  const room = await getRoom(roomId);
+  const activeId = room?.currentGame?.activeQuestionId;
+  if (!activeId) return;
+
+  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/questions/${activeId}/status`);
   await set(statusRef, "closed");
 }
 
-// 結果の公開
+// 結果の公開（アクティブなお題）
 export async function revealAnswers(roomId: string): Promise<void> {
-  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/question/status`);
+  const room = await getRoom(roomId);
+  const activeId = room?.currentGame?.activeQuestionId;
+  if (!activeId) return;
+
+  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/questions/${activeId}/status`);
   await set(statusRef, "revealed");
+}
+
+// ゲームリセット（全お題・回答をクリア）
+export async function resetCurrentGame(roomId: string): Promise<void> {
+  const roomRef = ref(getDb(), `rooms/${roomId}/currentGame`);
+  await update(ref(getDb(), `rooms/${roomId}`), {
+    "currentGame/questions": null,
+    "currentGame/answers": null,
+    "currentGame/activeQuestionId": null,
+    "currentGame/sentQuestionIndices": null,
+  });
 }
 
 // 参加者一覧の購読
@@ -269,6 +307,16 @@ export async function updateEntryFields(roomId: string, fields: EntryField[]): P
 export async function updatePlayerTable(roomId: string, playerId: string, tableNumber: number): Promise<void> {
   const tableRef = ref(getDb(), `rooms/${roomId}/players/${playerId}/tableNumber`);
   await set(tableRef, tableNumber);
+}
+
+// 参加者のフィールドを更新（追加項目への対応）
+export async function updatePlayerFields(
+  roomId: string,
+  playerId: string,
+  fields: Record<string, string | number>
+): Promise<void> {
+  const fieldsRef = ref(getDb(), `rooms/${roomId}/players/${playerId}/fields`);
+  await update(fieldsRef, fields);
 }
 
 // 参加者の削除（キック）
@@ -387,6 +435,27 @@ export async function clearStepReveal(
 ): Promise<void> {
   const revealRef = ref(getDb(), `rooms/${roomId}/stepReveals/${stepIndex}`);
   await set(revealRef, null);
+}
+
+// 回答リセット（特定ステップ）
+export async function resetStepResponses(
+  roomId: string,
+  stepIndex: number
+): Promise<void> {
+  const responsesRef = ref(getDb(), `rooms/${roomId}/stepResponses/${stepIndex}`);
+  await set(responsesRef, null);
+}
+
+// 回答＆開示の両方をリセット
+export async function resetStepAll(
+  roomId: string,
+  stepIndex: number
+): Promise<void> {
+  const roomRef = ref(getDb(), `rooms/${roomId}`);
+  await update(roomRef, {
+    [`stepResponses/${stepIndex}`]: null,
+    [`stepReveals/${stepIndex}`]: null,
+  });
 }
 
 // ========== ステップ割り込み ==========

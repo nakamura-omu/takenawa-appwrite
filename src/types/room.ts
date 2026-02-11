@@ -6,7 +6,9 @@ export type StepType =
   | "whole_game"
   | "break"
   | "result"
-  | "end";
+  | "end"
+  | "survey"         // アンケート回答収集
+  | "survey_result"; // アンケート結果表示
 
 export type GameType =
   | "value_match"  // 価値観マッチ
@@ -31,11 +33,20 @@ export interface StepDisplayConfig {
   showFields?: string[];     // 表示する参加者フィールドID（例: ["school", "age"]）
 }
 
-// ステップ入力設定
-export interface StepInputConfig {
-  prompt: string;           // "好きな食べ物は？"
+// ゲームのお題設定
+export interface GameQuestion {
+  text: string;                           // お題テキスト
   inputType: "text" | "number" | "select";
-  options?: string[];       // selectの場合
+  options?: string[];                     // selectの場合の選択肢
+}
+
+// アンケート設定
+export interface SurveyConfig {
+  question: string;         // アンケートの質問
+  options: string[];        // 選択肢
+  allowMultiple?: boolean;  // 複数選択可能か
+  resultStepIndex?: number; // 結果表示ステップのインデックス（自動設定）
+  questionStepIndex?: number; // 質問ステップのインデックス（結果ステップ用）
 }
 
 // 台本のステップ
@@ -44,10 +55,11 @@ export interface ScenarioStep {
   label: string;
   gameType?: GameType;
   config?: {
-    timeLimit?: number;  // 秒
+    timeLimit?: number;       // 秒（デフォルト制限時間）
+    questions?: GameQuestion[]; // 事前設定のお題リスト（ゲーム系ステップ用）
   };
   display?: StepDisplayConfig;  // 参加者表示設定
-  input?: StepInputConfig;      // 参加者入力プロンプト
+  survey?: SurveyConfig;        // アンケート設定
 }
 
 // タイムラインスナップショット（localStorage保存用）
@@ -99,6 +111,9 @@ export interface Question {
   text: string;
   timeLimit: number;
   status: QuestionStatus;
+  inputType: "text" | "number" | "select";
+  options?: string[];  // selectの場合の選択肢
+  sentAt?: number;     // 送出時刻（ログ順序用）
 }
 
 // 回答
@@ -123,8 +138,11 @@ export interface PlayerScore {
 export interface CurrentGame {
   type: GameType;
   round?: number;
-  question?: Question;
-  answers?: Record<string, Answer>;
+  // 複数お題対応（ログ形式で蓄積）
+  questions?: Record<string, Question>;  // questionId -> Question
+  answers?: Record<string, Record<string, Answer>>;  // questionId -> playerId -> Answer
+  activeQuestionId?: string;  // 現在アクティブな（受付中の）お題ID
+  sentQuestionIndices?: number[]; // 送出済みの事前設定お題インデックス
   // ストリームス用
   streams?: {
     deck: number[];

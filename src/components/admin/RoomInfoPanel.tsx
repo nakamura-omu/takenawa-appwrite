@@ -314,12 +314,12 @@ export default function RoomInfoPanel({
                   </label>
                 </div>
                 {field.type === "select" && (
-                  <input
-                    type="text"
-                    value={(field.options || []).join(",")}
-                    onChange={(e) => onUpdateField(idx, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-                    placeholder="選択肢（カンマ区切り）"
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                  <textarea
+                    value={(field.options || []).join("\n")}
+                    onChange={(e) => onUpdateField(idx, { options: e.target.value.split("\n") })}
+                    placeholder={"選択肢（1行に1つ）\n例:\n選択肢1\n選択肢2"}
+                    rows={3}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500 resize-none"
                   />
                 )}
               </div>
@@ -364,12 +364,13 @@ export default function RoomInfoPanel({
         )}
       </div>
 
-      <button
+      {/* TODO: 将来的にはアーカイブ機能として実装予定 */}
+      {/* <button
         onClick={onDeleteRoom}
         className="w-full py-2 bg-red-900 hover:bg-red-800 rounded text-sm transition"
       >
         ルームを削除
-      </button>
+      </button> */}
     </section>
   );
 }
