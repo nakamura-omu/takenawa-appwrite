@@ -44,7 +44,7 @@ export default function MessageSender({ roomId, room, players }: MessageSenderPr
 
   const playerList = players ? Object.entries(players) : [];
   const messageList = messages
-    ? Object.values(messages).sort((a, b) => b.sentAt - a.sentAt)
+    ? Object.values(messages).sort((a, b) => a.sentAt - b.sentAt)
     : [];
 
   const formatTarget = (t: MessageTarget): string => {

@@ -1,0 +1,217 @@
+"use client";
+
+import { Room, Player, StepResponse, GameResult, RevealDisplayType, AnswerRevealScope } from "@/types/room";
+import { PieChart } from "./PieChart";
+import { ScoreBoard } from "./ScoreBoard";
+
+interface RevealDisplayProps {
+  room: Room;
+  sourceStepIndex: number;
+  displayType: RevealDisplayType;
+  scope?: AnswerRevealScope;
+  playerId: string;
+  playerTableNumber: number;
+  allPlayers: Record<string, Player> | null;
+}
+
+const CHART_COLORS = [
+  "#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981",
+  "#ec4899", "#3b82f6", "#f97316", "#14b8a6", "#a855f7",
+];
+
+export function RevealDisplay({
+  room,
+  sourceStepIndex,
+  displayType,
+  scope,
+  playerId,
+  playerTableNumber,
+  allPlayers,
+}: RevealDisplayProps) {
+  const sourceStep = room.scenario?.steps?.[sourceStepIndex];
+  if (!sourceStep) return <p className="text-sm text-gray-500">参照先ステップが見つかりません</p>;
+
+  // Determine data source
+  const isGame = sourceStep.type === "table_game" || sourceStep.type === "whole_game";
+  const isSurvey = sourceStep.type === "survey" || sourceStep.type === "survey_open";
+
+  // Game results
+  const gameResult: GameResult | undefined = room.gameResults?.[String(sourceStepIndex)];
+
+  // Survey responses
+  const surveyResponses: Record<string, StepResponse> | undefined = room.stepResponses?.[String(sourceStepIndex)];
+
+  // Filter responses by scope if needed
+  const filterByScope = <T extends { tableNumber?: number }>(
+    entries: [string, T][],
+  ): [string, T][] => {
+    if (!scope || scope.type === "all") return entries;
+    if (scope.type === "table") {
+      return entries.filter(([pid]) => {
+        const assignments = room.publishedTables?.assignments;
+        if (!assignments) return true;
+        return assignments[pid] === playerTableNumber;
+      });
+    }
+    if (scope.type === "players") {
+      return entries.filter(([pid]) => scope.playerIds.includes(pid) || pid === playerId);
+    }
+    return entries;
+  };
+
+  // === SCOREBOARD ===
+  if (displayType === "scoreboard") {
+    if (isGame && gameResult) {
+      return (
+        <div>
+          <h4 className="text-xs font-semibold text-gray-400 mb-2">スコアボード</h4>
+          <ScoreBoard scores={gameResult.scores} players={allPlayers} myPlayerId={playerId} />
+        </div>
+      );
+    }
+    return <p className="text-sm text-gray-500">スコアデータがありません</p>;
+  }
+
+  // === LIST ===
+  if (displayType === "list") {
+    if (isSurvey && surveyResponses) {
+      const entries = filterByScope(Object.entries(surveyResponses));
+      return (
+        <div className="space-y-1.5">
+          <h4 className="text-xs font-semibold text-gray-400 mb-2">回答一覧</h4>
+          {entries.map(([pid, resp]) => (
+            <div
+              key={pid}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded ${
+                pid === playerId ? "bg-purple-900/30 border border-purple-700/50" : "bg-gray-800/50"
+              }`}
+            >
+              <span className="text-xs text-gray-500 w-20 shrink-0 truncate">{resp.playerName}</span>
+              <span className="text-sm text-white">{String(resp.value)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    if (isGame && gameResult) {
+      // Show all answers from all questions
+      const allEntries: { pid: string; name: string; text: string; qText: string }[] = [];
+      Object.entries(gameResult.questions).forEach(([qId, q]) => {
+        const qAnswers = gameResult.answers[qId] || {};
+        Object.entries(qAnswers).forEach(([pid, ans]) => {
+          allEntries.push({
+            pid,
+            name: allPlayers?.[pid]?.name || pid.slice(0, 6),
+            text: ans.text,
+            qText: q.text,
+          });
+        });
+      });
+      return (
+        <div className="space-y-1.5">
+          <h4 className="text-xs font-semibold text-gray-400 mb-2">回答一覧</h4>
+          {allEntries.map((e, i) => (
+            <div key={i} className={`px-3 py-1.5 rounded ${
+              e.pid === playerId ? "bg-purple-900/30" : "bg-gray-800/50"
+            }`}>
+              <span className="text-xs text-gray-500">{e.name}</span>
+              <span className="text-sm text-white ml-2">{e.text}</span>
+              <span className="text-xs text-gray-600 ml-1">({e.qText})</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return <p className="text-sm text-gray-500">データがありません</p>;
+  }
+
+  // === BAR CHART ===
+  if (displayType === "bar_chart") {
+    const counts = getAggregatedCounts(sourceStep, surveyResponses, gameResult, filterByScope);
+    if (!counts || counts.length === 0) return <p className="text-sm text-gray-500">データがありません</p>;
+
+    const maxCount = Math.max(...counts.map((c) => c.count));
+    return (
+      <div className="space-y-2">
+        <h4 className="text-xs font-semibold text-gray-400 mb-2">集計結果</h4>
+        {counts.map((item, i) => {
+          const pct = maxCount > 0 ? (item.count / maxCount) * 100 : 0;
+          return (
+            <div key={i}>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-xs text-gray-300 truncate">{item.label}</span>
+                <span className="text-xs text-gray-400 shrink-0 ml-1">{item.count}票</span>
+              </div>
+              <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${pct}%`,
+                    backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // === PIE CHART ===
+  if (displayType === "pie_chart") {
+    const counts = getAggregatedCounts(sourceStep, surveyResponses, gameResult, filterByScope);
+    if (!counts || counts.length === 0) return <p className="text-sm text-gray-500">データがありません</p>;
+
+    const pieData = counts.map((c, i) => ({
+      label: c.label,
+      value: c.count,
+      color: CHART_COLORS[i % CHART_COLORS.length],
+    }));
+    return (
+      <div>
+        <h4 className="text-xs font-semibold text-gray-400 mb-2">集計結果</h4>
+        <PieChart data={pieData} />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// Helper: Aggregate counts from survey or game data
+function getAggregatedCounts(
+  sourceStep: { type: string; survey?: { options: string[] } },
+  surveyResponses: Record<string, StepResponse> | undefined,
+  gameResult: GameResult | undefined,
+  filterByScope: <T extends { tableNumber?: number }>(entries: [string, T][]) => [string, T][],
+): { label: string; count: number }[] | null {
+  if (sourceStep.type === "survey" && surveyResponses) {
+    const options = sourceStep.survey?.options || [];
+    const filtered = filterByScope(Object.entries(surveyResponses));
+    const counts: Record<string, number> = {};
+    options.forEach((opt) => { counts[opt] = 0; });
+    filtered.forEach(([, resp]) => {
+      const val = String(resp.value);
+      if (counts[val] !== undefined) counts[val]++;
+      else counts[val] = 1;
+    });
+    return Object.entries(counts).map(([label, count]) => ({ label, count }));
+  }
+
+  if ((sourceStep.type === "table_game" || sourceStep.type === "whole_game") && gameResult) {
+    // Aggregate answers across all questions
+    const counts: Record<string, number> = {};
+    Object.values(gameResult.answers).forEach((qAnswers) => {
+      Object.values(qAnswers).forEach((ans) => {
+        const val = ans.text.trim();
+        counts[val] = (counts[val] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, count]) => ({ label, count }));
+  }
+
+  return null;
+}

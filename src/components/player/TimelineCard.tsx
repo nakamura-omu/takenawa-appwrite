@@ -13,6 +13,9 @@ export function TimelineCard({
   entryFields,
   allPlayers,
   playerId,
+  publishedTableNumber,
+  publishedAssignments,
+  timestamp,
 }: {
   stepIndex: number;
   step: ScenarioStep;
@@ -23,15 +26,26 @@ export function TimelineCard({
   entryFields: EntryField[];
   allPlayers?: Record<string, Player> | null;
   playerId?: string | null;
+  publishedTableNumber?: number;
+  publishedAssignments?: Record<string, number>;
+  timestamp?: number;
 }) {
   const display = step.display || getDefaultDisplay(step);
-  // 現在のステップはライブデータ、過去のステップはスナップショット
-  const tableNum = isCurrent ? player.tableNumber : (snapshot?.tableNumber ?? player.tableNumber);
+  // 現在のステップはpublishedTableNumberを使用、過去のステップはスナップショット
+  const tableNum = isCurrent
+    ? (publishedTableNumber ?? player.tableNumber)
+    : (snapshot?.tableNumber ?? player.tableNumber);
 
-  // テーブルメイト: 現在のステップはライブデータから取得、過去はスナップショット
+  // テーブルメイト: 現在のステップはpublishedAssignmentsから取得、過去はスナップショット
   const tablemates: string[] = (() => {
     if (!isCurrent) return snapshot?.tablemates ?? [];
     if (!allPlayers || !playerId || tableNum <= 0) return [];
+    if (publishedAssignments) {
+      return Object.entries(publishedAssignments)
+        .filter(([pid, tNum]) => pid !== playerId && tNum === tableNum)
+        .map(([pid]) => allPlayers[pid]?.name)
+        .filter(Boolean) as string[];
+    }
     return Object.entries(allPlayers)
       .filter(([pid, p]) => pid !== playerId && p.tableNumber === tableNum)
       .map(([, p]) => p.name);
@@ -47,9 +61,16 @@ export function TimelineCard({
       <div className={`absolute left-0.5 top-1.5 w-3 h-3 rounded-full border-2 border-gray-950 ${isCurrent ? "bg-green-500" : "bg-blue-500"}`} />
 
       <div className={`bg-gray-900 rounded-lg p-4 border ${isCurrent ? "border-green-800" : "border-gray-800"}`}>
-        <p className="text-xs text-gray-500 mb-2">
-          Step {stepIndex + 1}: {step.label}
-        </p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs text-gray-500">
+            Step {stepIndex + 1}: {step.label}
+          </p>
+          {timestamp && (
+            <span className="text-[10px] text-gray-600">
+              {new Date(timestamp).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
+        </div>
 
         {/* テーブル変更通知 */}
         {tableChanged && (
@@ -62,7 +83,7 @@ export function TimelineCard({
         {/* メッセージ */}
         {display.message && (
           <p className="text-sm font-medium mb-2 whitespace-pre-wrap">
-            {resolveMessage(display.message, player)}
+            {resolveMessage(display.message, player, publishedTableNumber)}
           </p>
         )}
 

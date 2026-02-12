@@ -7,13 +7,18 @@ export type StepType =
   | "break"
   | "result"
   | "end"
-  | "survey"         // アンケート回答収集
-  | "survey_result"; // アンケート結果表示
+  | "survey"         // アンケート集計（選択肢→結果表示）
+  | "survey_open"    // アンケート回答依頼（フリーテキスト収集）
+  | "survey_result"  // アンケート結果表示
+  | "participants"   // 参加者一覧（テーブル移動案内用）
+  | "reveal";        // 汎用回答開示
 
 export type GameType =
-  | "value_match"  // 価値観マッチ
-  | "seno"         // せーの！
-  | "streams";     // ストリームス
+  | "tuning_gum"       // チューニングガム
+  | "good_line"        // いい線行きましょう
+  | "evens"            // みんなのイーブン
+  | "krukkurin"        // くるっくりん
+  | "meta_streams";    // メタストリームス
 
 export type Phase =
   | "waiting"
@@ -49,17 +54,28 @@ export interface SurveyConfig {
   questionStepIndex?: number; // 質問ステップのインデックス（結果ステップ用）
 }
 
+// 汎用回答開示設定
+export type RevealDisplayType = "list" | "bar_chart" | "pie_chart" | "scoreboard";
+
+export interface RevealConfig {
+  sourceStepIndex: number;
+  displayType: RevealDisplayType;
+  scope?: AnswerRevealScope;
+}
+
 // 台本のステップ
 export interface ScenarioStep {
   type: StepType;
   label: string;
+  durationMinutes?: number;  // ステップ所要時間（分）— タイムキープ用
   gameType?: GameType;
   config?: {
-    timeLimit?: number;       // 秒（デフォルト制限時間）
+    timeLimit?: number;       // 秒（レガシー、未使用）
     questions?: GameQuestion[]; // 事前設定のお題リスト（ゲーム系ステップ用）
   };
   display?: StepDisplayConfig;  // 参加者表示設定
   survey?: SurveyConfig;        // アンケート設定
+  reveal?: RevealConfig;        // 汎用回答開示設定
 }
 
 // タイムラインスナップショット（localStorage保存用）
@@ -77,6 +93,7 @@ export interface EntryField {
   type: "text" | "number" | "select";
   required: boolean;
   options?: string[]; // type="select" の場合の選択肢
+  showInHeader?: boolean; // テーブル情報ヘッダーに表示するか
 }
 
 // ルーム設定
@@ -95,6 +112,7 @@ export interface RoomConfig {
 export interface RoomState {
   currentStep: number;
   phase: Phase;
+  stepTimestamps?: Record<string, number>;  // stepIndex -> そのステップ開始時刻
 }
 
 // 参加者
@@ -106,6 +124,12 @@ export interface Player {
   fields: Record<string, string | number>;  // カスタムフィールド値
 }
 
+// 回答公開スコープ
+export type AnswerRevealScope =
+  | { type: "all" }
+  | { type: "table" }
+  | { type: "players"; playerIds: string[] };
+
 // お題
 export interface Question {
   text: string;
@@ -114,6 +138,7 @@ export interface Question {
   inputType: "text" | "number" | "select";
   options?: string[];  // selectの場合の選択肢
   sentAt?: number;     // 送出時刻（ログ順序用）
+  revealScope?: AnswerRevealScope;  // 回答公開範囲
 }
 
 // 回答
@@ -134,23 +159,62 @@ export interface PlayerScore {
   gameScores?: Record<string, number>;
 }
 
+// カードめくりゲーム用ステート
+export interface StreamsCard {
+  number: number;     // めくった数字
+  points: number;     // ランダム得点 (5-25)
+  flippedAt: number;  // めくった時刻
+}
+
+export interface PlayerBoard {
+  rows: (number | null)[][];  // 行ごとのマス（null=空）
+  lastRow?: number;           // 前回配置した行（くるっくりん用）
+  passCount: number;
+  eliminated: boolean;
+  completed: boolean;
+  score: number;              // 累積得点
+  acted: boolean;             // 現カードにアクション済みか
+}
+
 // 現在のゲーム状態
 export interface CurrentGame {
   type: GameType;
+  scope: "table" | "whole";         // テーブル内 or 全体
+  autoProgress: boolean;             // 全員回答で自動進行
+  anonymousMode?: boolean;           // 匿名回答（シャッフル表示）
   round?: number;
   // 複数お題対応（ログ形式で蓄積）
   questions?: Record<string, Question>;  // questionId -> Question
   answers?: Record<string, Record<string, Answer>>;  // questionId -> playerId -> Answer
   activeQuestionId?: string;  // 現在アクティブな（受付中の）お題ID
+  questionOrder?: string[];        // 自動進行用の問題順序
   sentQuestionIndices?: number[]; // 送出済みの事前設定お題インデックス
-  // ストリームス用
+  // テーブルモード時のテーブル別進行状態
+  tableProgress?: Record<string, number>; // "table_N" -> questionOrderのindex
+  // 全体モード時の進行状態
+  currentQuestionIdx?: number;
+  showScoreboard?: boolean;           // 管理者がスコアボードを参加者に表示するか
+  // Streams系ゲーム用
   streams?: {
-    deck: number[];
-    drawnCards: number[];
-    currentCard: number | null;
-    cardIndex: number;
-    placements?: Record<string, (number | null)[]>;
+    deck: number[];                  // シャッフル済みデッキ
+    currentCardIdx: number;          // 現在のインデックス
+    currentCard: StreamsCard | null; // 現在めくられたカード
+    history: StreamsCard[];          // めくり履歴
   };
+  boards?: Record<string, PlayerBoard>; // playerId -> ボード状態
+}
+
+// ゲーム結果（永続化用）
+export interface GameResult {
+  type: GameType;
+  scope: "table" | "whole";
+  questions: Record<string, Question>;
+  answers: Record<string, Record<string, Answer>>;
+  scores: Record<string, number>;  // playerId -> total
+  completedAt: number;
+  // Streams系ゲームの結果
+  streamsHistory?: StreamsCard[];
+  boards?: Record<string, PlayerBoard>;
 }
 
 // 管理者メッセージ
@@ -196,18 +260,26 @@ export interface Room {
     players?: Record<string, PlayerScore>;
   };
   messages?: Record<string, AdminMessage>;
+  gameResults?: Record<string, GameResult>;  // stepIndex -> ゲーム結果
   stepResponses?: Record<string, Record<string, StepResponse>>;  // stepIndex -> playerId -> response
   stepReveals?: Record<string, StepInputReveal>;                  // stepIndex -> reveal config
+  publishedTables?: {
+    assignments: Record<string, number>;  // playerId -> tableNumber
+    pushedAt: number;
+  };
+  publishHistory?: Record<string, {
+    pushedAt: number;
+    assignments: Record<string, number>;
+  }>;
 }
 
 // デフォルトの台本
 export const DEFAULT_SCENARIO_STEPS: ScenarioStep[] = [
-  { type: "entry", label: "受付" },
-  { type: "table_game", label: "テーブルゲーム ラウンド1", gameType: "value_match", config: { timeLimit: 30 } },
-  { type: "table_game", label: "テーブルゲーム ラウンド2", gameType: "seno", config: { timeLimit: 30 } },
-  { type: "table_game", label: "テーブルゲーム ラウンド3", gameType: "value_match", config: { timeLimit: 30 } },
-  { type: "break", label: "歓談タイム" },
-  { type: "whole_game", label: "全体ゲーム", gameType: "streams", config: { timeLimit: 15 } },
-  { type: "result", label: "結果発表" },
+  { type: "entry", label: "受付", durationMinutes: 10 },
+  { type: "table_game", label: "チューニングガム", gameType: "tuning_gum", durationMinutes: 15 },
+  { type: "table_game", label: "いい線行きましょう", gameType: "good_line", durationMinutes: 15 },
+  { type: "break", label: "歓談タイム", durationMinutes: 10 },
+  { type: "whole_game", label: "みんなのイーブン", gameType: "evens", durationMinutes: 15 },
+  { type: "result", label: "結果発表", durationMinutes: 5 },
   { type: "end", label: "閉会" },
 ];

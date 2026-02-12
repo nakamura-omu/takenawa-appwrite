@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Room, Player, EntryField } from "@/types/room";
+import { updateEntryFields } from "@/lib/room";
 
 export interface PlayersPanelProps {
   room: Room;
@@ -11,6 +12,8 @@ export interface PlayersPanelProps {
   setAssigningPlayer: (v: string | null) => void;
   onAssignTable: (playerId: string, tableNumber: number) => void;
   onKickPlayer: (playerId: string, playerName: string) => void;
+  roomId: string;
+  onPublishTables: () => void;
 }
 
 export default function PlayersPanel({
@@ -21,6 +24,8 @@ export default function PlayersPanel({
   setAssigningPlayer,
   onAssignTable,
   onKickPlayer,
+  roomId,
+  onPublishTables,
 }: PlayersPanelProps) {
   const [detailPlayerId, setDetailPlayerId] = useState<string | null>(null);
 
@@ -31,6 +36,13 @@ export default function PlayersPanel({
 
   const detailPlayer = detailPlayerId && players ? players[detailPlayerId] : null;
   const entryFields = room.config.entryFields || [];
+
+  // 公開済みテーブル情報との差分チェック
+  const publishedAssignments = room.publishedTables?.assignments;
+  const hasUnpublished = (id: string, player: Player): boolean => {
+    if (!publishedAssignments) return player.tableNumber !== 0;
+    return publishedAssignments[id] !== player.tableNumber;
+  };
 
   return (
     <section className="bg-gray-900 rounded-lg p-4">
@@ -44,6 +56,54 @@ export default function PlayersPanel({
           </span>
         )}
       </div>
+
+      {/* テーブル情報プッシュ */}
+      {totalCount > 0 && (
+        <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-gray-400">
+                {room.publishedTables
+                  ? `最終プッシュ: ${new Date(room.publishedTables.pushedAt).toLocaleTimeString("ja-JP")}`
+                  : "未プッシュ"}
+              </p>
+            </div>
+            <button
+              onClick={onPublishTables}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs font-semibold transition"
+            >
+              テーブル情報をプッシュ
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 卓表示設定（showInHeader トグル） */}
+      {entryFields.filter((f) => f.id !== "name").length > 0 && (
+        <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
+          <p className="text-xs text-white font-bold mb-2">卓表示設定</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {entryFields.map((field, i) => {
+              if (field.id === "name") return null;
+              return (
+                <label key={field.id} className="flex items-center gap-1.5 text-xs text-white">
+                  <input
+                    type="checkbox"
+                    checked={field.showInHeader || false}
+                    onChange={async (e) => {
+                      const newFields = entryFields.map((f, j) =>
+                        j === i ? { ...f, showInHeader: e.target.checked || undefined } : f
+                      );
+                      await updateEntryFields(roomId, newFields);
+                    }}
+                  />
+                  {field.label}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {!players || Object.keys(players).length === 0 ? (
         <p className="text-gray-500 text-sm">参加者待ち...</p>
@@ -64,6 +124,9 @@ export default function PlayersPanel({
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
+                        {hasUnpublished(id, player) && (
+                          <span className="text-[10px] text-orange-400">(未公開)</span>
+                        )}
                       </span>
                       <span className="flex gap-1">
                         <button
@@ -136,6 +199,9 @@ export default function PlayersPanel({
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
+                        {hasUnpublished(id, player) && (
+                          <span className="text-[10px] text-orange-400">(未公開)</span>
+                        )}
                       </span>
                       <span className="flex gap-1">
                         <button
@@ -200,6 +266,9 @@ export default function PlayersPanel({
                       <span className="flex items-center gap-1.5">
                         <span className={`inline-block w-2 h-2 rounded-full ${player.connected ? "bg-green-400" : "bg-gray-600"}`} />
                         {player.name}
+                        {hasUnpublished(id, player) && (
+                          <span className="text-[10px] text-orange-400">(未公開)</span>
+                        )}
                       </span>
                       <span className="flex gap-1">
                         <button

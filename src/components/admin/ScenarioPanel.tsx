@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { Room, Player, ScenarioStep, StepType, GameType, GameQuestion } from "@/types/room";
+import { useState, useEffect } from "react";
+import { Room, Player, ScenarioStep, StepType, GameType, GameQuestion, RevealDisplayType } from "@/types/room";
+import { pickRandomQuestions } from "@/lib/questionBank";
 import {
   goToNextStep,
   goToPrevStep,
@@ -13,7 +14,7 @@ import MessageSender from "./MessageSender";
 import GameControls from "./GameControls";
 import StepDetailView from "./StepDetailView";
 import StepEditForm from "./StepEditForm";
-import { getDefaultMessage, stepTypeLabel } from "./scenarioUtils";
+import { getDefaultMessage, stepTypeLabel, INSERTABLE_STEP_TYPES } from "./scenarioUtils";
 
 export interface ScenarioPanelProps {
   roomId: string;
@@ -113,9 +114,9 @@ export default function ScenarioPanel({
       return cleaned;
     };
 
-    // アンケートステップの結果ステップを自動生成
+    // アンケート・ゲームステップの結果ステップを自動生成
     const processedSteps: ScenarioStep[] = [];
-    scenarioDraft.forEach((step) => {
+    scenarioDraft.forEach((step, idx) => {
       if (step.type === "survey" && step.survey) {
         // 質問ステップを追加
         const questionStep: ScenarioStep = {
@@ -127,18 +128,52 @@ export default function ScenarioPanel({
         };
         processedSteps.push(questionStep);
 
-        // 結果ステップを自動追加
+        // 結果ステップを自動追加（reveal形式）
         const resultStep: ScenarioStep = {
-          type: "survey_result",
+          type: "reveal",
           label: `${step.label}（結果）`,
-          survey: {
-            question: step.survey.question,
-            options: step.survey.options,
-            allowMultiple: step.survey.allowMultiple,
-            questionStepIndex: processedSteps.length - 1, // 直前のステップが質問
+          reveal: {
+            sourceStepIndex: processedSteps.length - 1,
+            displayType: "bar_chart",
           },
         };
         processedSteps.push(resultStep);
+      } else if (step.type === "survey_open" && step.survey) {
+        processedSteps.push(cleanStep(step));
+
+        // 次のステップが既にこの回答のreveal(list)なら追加しない
+        const next = scenarioDraft[idx + 1];
+        const alreadyHasResult = next?.type === "reveal"
+          && next.reveal?.displayType === "list";
+        if (!alreadyHasResult) {
+          const resultStep: ScenarioStep = {
+            type: "reveal",
+            label: `${step.label}（結果）`,
+            reveal: {
+              sourceStepIndex: processedSteps.length - 1,
+              displayType: "list",
+            },
+          };
+          processedSteps.push(resultStep);
+        }
+      } else if (step.type === "table_game" || step.type === "whole_game") {
+        processedSteps.push(cleanStep(step));
+
+        // 次のステップが既にこのゲームのreveal(scoreboard)なら追加しない
+        const next = scenarioDraft[idx + 1];
+        const alreadyHasResult = next?.type === "reveal"
+          && next.reveal?.displayType === "scoreboard";
+        if (!alreadyHasResult) {
+          const resultStep: ScenarioStep = {
+            type: "reveal",
+            label: `${step.label}（結果発表）`,
+            reveal: {
+              sourceStepIndex: processedSteps.length - 1,
+              displayType: "scoreboard",
+            },
+          };
+          processedSteps.push(resultStep);
+        }
       } else if (step.type === "survey_result") {
         // 結果ステップは自動生成されるのでスキップ
         // （既存の結果ステップが残っている場合は除外）
@@ -235,6 +270,7 @@ export default function ScenarioPanel({
           setScenarioDraft={setScenarioDraft}
           onSave={handleSaveScenario}
           onCancel={handleCancelScenario}
+          currentStep={room.state.currentStep}
         />
       ) : (
         /* ========== 進行モード ========== */
@@ -246,6 +282,10 @@ export default function ScenarioPanel({
               <span className="text-xs font-semibold text-white">
                 Step {room.state.currentStep + 1} — {steps[room.state.currentStep]?.label}
               </span>
+              <StepTimer
+                stepTimestamp={room.state.stepTimestamps?.[`s${room.state.currentStep}`]}
+                durationMinutes={steps[room.state.currentStep]?.durationMinutes}
+              />
               <span className="ml-auto text-xs text-gray-400">
                 {room.state.phase}
               </span>
@@ -307,8 +347,14 @@ export default function ScenarioPanel({
                             ? "bg-purple-900 text-purple-300"
                             : step.type === "survey"
                             ? "bg-orange-900 text-orange-300"
+                            : step.type === "survey_open"
+                            ? "bg-amber-900 text-amber-300"
                             : step.type === "survey_result"
                             ? "bg-orange-900/70 text-orange-300"
+                            : step.type === "participants"
+                            ? "bg-cyan-900 text-cyan-300"
+                            : step.type === "reveal"
+                            ? "bg-pink-900 text-pink-300"
                             : "bg-gray-700 text-gray-300"
                         }`}
                       >
@@ -316,6 +362,15 @@ export default function ScenarioPanel({
                       </span>
                       {step.gameType && (
                         <span className="text-xs text-gray-400">{step.gameType}</span>
+                      )}
+                      {step.durationMinutes && (
+                        <span className="text-xs text-gray-500">{step.durationMinutes}分</span>
+                      )}
+                      {index === room.state.currentStep && (
+                        <StepTimer
+                          stepTimestamp={room.state.stepTimestamps?.[`s${index}`]}
+                          durationMinutes={step.durationMinutes}
+                        />
                       )}
                       <span className="ml-auto text-xs text-gray-600">
                         {isExpanded ? "▲" : "▼"}
@@ -336,11 +391,12 @@ export default function ScenarioPanel({
                           room={room}
                           onSave={handleSaveStepEdit}
                           onCancel={handleCancelStepEdit}
+                          stepIndex={index}
                         />
                       ) : (
                         /* --- 読み取り表示 --- */
                         <>
-                          <StepDetailView roomId={roomId} step={step} room={room} players={players} />
+                          <StepDetailView roomId={roomId} stepIndex={index} step={step} room={room} players={players} />
 
                           {/* ゲーム操作（現在ステップ かつ ゲーム系） */}
                           {index === room.state.currentStep &&
@@ -439,6 +495,7 @@ interface ScenarioEditModeProps {
   setScenarioDraft: (steps: ScenarioStep[]) => void;
   onSave: () => void;
   onCancel: () => void;
+  currentStep: number;
 }
 
 function ScenarioEditMode({
@@ -451,6 +508,7 @@ function ScenarioEditMode({
   setScenarioDraft,
   onSave,
   onCancel,
+  currentStep,
 }: ScenarioEditModeProps) {
   return (
     <div>
@@ -466,12 +524,18 @@ function ScenarioEditMode({
                 + ここに挿入
               </button>
             )}
-            <div className="bg-gray-800 p-3 rounded border border-gray-700">
+            <div className={`p-3 rounded border ${
+              idx === currentStep
+                ? "border-blue-500 bg-blue-900/30"
+                : idx < currentStep
+                ? "border-gray-700 bg-gray-800/50 opacity-60"
+                : "border-gray-700 bg-gray-800"
+            }`}>
               <div className="flex gap-1 items-center mb-2">
                 <span className="text-xs text-gray-500 mr-1">Step {idx + 1}</span>
-                <button onClick={() => draftMove(idx, -1)} disabled={idx === 0} className="px-1 text-gray-400 hover:text-white disabled:opacity-30 text-xs">↑</button>
-                <button onClick={() => draftMove(idx, 1)} disabled={idx === scenarioDraft.length - 1} className="px-1 text-gray-400 hover:text-white disabled:opacity-30 text-xs">↓</button>
-                <button onClick={() => draftRemove(idx)} className="ml-auto px-1 text-red-400 hover:text-red-300 text-xs">削除</button>
+                <button onClick={() => draftMove(idx, -1)} disabled={idx === 0 || (idx === 1 && scenarioDraft[0]?.type === "entry")} className="px-1 text-gray-400 hover:text-white disabled:opacity-30 text-xs">↑</button>
+                <button onClick={() => draftMove(idx, 1)} disabled={idx === scenarioDraft.length - 1 || (idx === 0 && step.type === "entry")} className="px-1 text-gray-400 hover:text-white disabled:opacity-30 text-xs">↓</button>
+                <button onClick={() => draftRemove(idx)} disabled={idx === 0 && step.type === "entry"} className="ml-auto px-1 text-red-400 hover:text-red-300 text-xs disabled:opacity-30">削除</button>
               </div>
               {/* 基本設定 */}
               <div className="grid grid-cols-2 gap-2">
@@ -489,6 +553,7 @@ function ScenarioEditMode({
                   <label className="block text-xs text-gray-500 mb-1">タイプ</label>
                   <select
                     value={step.type}
+                    disabled={idx === 0 && step.type === "entry"}
                     onChange={(e) => {
                       const newType = e.target.value as StepType;
                       const updates: Partial<ScenarioStep> = { type: newType };
@@ -496,53 +561,61 @@ function ScenarioEditMode({
                         updates.gameType = undefined;
                         updates.config = undefined;
                       }
-                      if (newType !== "survey" && newType !== "survey_result") {
+                      if (newType !== "survey" && newType !== "survey_open" && newType !== "survey_result") {
                         updates.survey = undefined;
                       }
                       if (newType === "survey") {
                         updates.survey = { question: "", options: ["", ""] };
                       }
+                      if (newType === "survey_open") {
+                        updates.survey = { question: "", options: [] };
+                      }
+                      if (newType === "reveal") {
+                        updates.reveal = { sourceStepIndex: 0, displayType: "list" };
+                      }
+                      if (newType !== "reveal") {
+                        updates.reveal = undefined;
+                      }
                       draftUpdate(idx, updates);
                     }}
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
                   >
-                    <option value="entry">受付</option>
-                    <option value="table_game">テーブルゲーム</option>
-                    <option value="whole_game">全体ゲーム</option>
-                    <option value="break">歓談</option>
-                    <option value="survey">アンケート</option>
-                    <option value="result">結果発表</option>
-                    <option value="end">閉会</option>
+                    {step.type === "entry" && <option value="entry">受付</option>}
+                    {INSERTABLE_STEP_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
                   </select>
                 </div>
+              </div>
+              {/* 所要時間 */}
+              <div className="mt-2">
+                <label className="block text-xs text-gray-500 mb-1">所要時間（分）</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={step.durationMinutes || ""}
+                  onChange={(e) => draftUpdate(idx, { durationMinutes: Number(e.target.value) || undefined })}
+                  placeholder="例: 15"
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
               </div>
               {/* ゲーム設定（ゲーム系のみ） */}
               {(step.type === "table_game" || step.type === "whole_game") && (
                 <div className="mt-2 space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">ゲームタイプ</label>
-                      <select
-                        value={step.gameType || ""}
-                        onChange={(e) => draftUpdate(idx, { gameType: (e.target.value || undefined) as GameType | undefined })}
-                        className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                      >
-                        <option value="">未設定</option>
-                        <option value="value_match">価値観マッチ</option>
-                        <option value="seno">せーの！</option>
-                        <option value="streams">ストリームス</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">制限時間（秒）</label>
-                      <input
-                        type="number"
-                        value={step.config?.timeLimit || ""}
-                        onChange={(e) => draftUpdate(idx, { config: { ...step.config, timeLimit: Number(e.target.value) || undefined } })}
-                        placeholder="30"
-                        className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">ゲームタイプ</label>
+                    <select
+                      value={step.gameType || ""}
+                      onChange={(e) => draftUpdate(idx, { gameType: (e.target.value || undefined) as GameType | undefined })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">未設定</option>
+                      <option value="tuning_gum">チューニングガム</option>
+                      <option value="good_line">いい線行きましょう</option>
+                      <option value="evens">みんなのイーブン</option>
+                      <option value="krukkurin">くるっくりん</option>
+                      <option value="meta_streams">メタストリームス</option>
+                    </select>
                   </div>
                   {/* お題リスト */}
                   <div>
@@ -573,6 +646,28 @@ function ScenarioEditMode({
                       >
                         + お題を追加
                       </button>
+                      {step.gameType && (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const preset = pickRandomQuestions(step.gameType!, 1);
+                              draftUpdate(idx, { config: { ...step.config, questions: [...(step.config?.questions || []), ...preset] } });
+                            }}
+                            className="flex-1 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-indigo-100 rounded text-xs font-semibold transition"
+                          >
+                            プリセット1問追加
+                          </button>
+                          <button
+                            onClick={() => {
+                              const preset = pickRandomQuestions(step.gameType!, 5);
+                              draftUpdate(idx, { config: { ...step.config, questions: [...(step.config?.questions || []), ...preset] } });
+                            }}
+                            className="flex-1 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-indigo-100 rounded text-xs font-semibold transition"
+                          >
+                            プリセット5問追加
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -616,6 +711,24 @@ function ScenarioEditMode({
                   </p>
                 </div>
               )}
+              {/* アンケート回答（フリーテキスト） */}
+              {step.type === "survey_open" && (
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">質問文</label>
+                    <input
+                      type="text"
+                      value={step.survey?.question || ""}
+                      onChange={(e) => draftUpdate(idx, { survey: { ...step.survey!, question: e.target.value } })}
+                      placeholder="例: 主催へのひとことをどうぞ！"
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <p className="text-xs text-blue-400">
+                    ※ 保存時に結果表示ステップが自動追加されます（不要なら削除可）
+                  </p>
+                </div>
+              )}
               {/* アンケート結果（読み取り専用） */}
               {step.type === "survey_result" && (
                 <div className="mt-2">
@@ -625,6 +738,41 @@ function ScenarioEditMode({
                       <span className="text-blue-400">（Step {step.survey.questionStepIndex + 1} の結果）</span>
                     )}
                   </p>
+                </div>
+              )}
+              {/* 回答開示設定 */}
+              {step.type === "reveal" && (
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">参照ステップ</label>
+                    <select
+                      value={step.reveal?.sourceStepIndex ?? 0}
+                      onChange={(e) => draftUpdate(idx, { reveal: { ...step.reveal!, sourceStepIndex: Number(e.target.value) } })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      {scenarioDraft.map((s, i) => {
+                        if (s.type !== "survey" && s.type !== "survey_open" && s.type !== "table_game" && s.type !== "whole_game") return null;
+                        return (
+                          <option key={i} value={i}>
+                            Step {i + 1}: {s.label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">表示形式</label>
+                    <select
+                      value={step.reveal?.displayType || "list"}
+                      onChange={(e) => draftUpdate(idx, { reveal: { ...step.reveal!, displayType: e.target.value as RevealDisplayType } })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="list">一覧</option>
+                      <option value="bar_chart">棒グラフ</option>
+                      <option value="pie_chart">円グラフ</option>
+                      <option value="scoreboard">スコアボード</option>
+                    </select>
+                  </div>
                 </div>
               )}
             </div>
@@ -644,7 +792,7 @@ function ScenarioEditMode({
       >
         + 末尾にステップを追加
       </button>
-      <div className="flex gap-2">
+      <div className="sticky bottom-0 bg-gray-900 pt-2 pb-1 -mx-4 px-4 border-t border-gray-700 flex gap-2">
         <button
           onClick={onSave}
           disabled={scenarioDraft.some((s) => !s.label.trim())}
@@ -660,6 +808,46 @@ function ScenarioEditMode({
         </button>
       </div>
     </div>
+  );
+}
+
+// ========== ステップタイマー ==========
+
+function StepTimer({ stepTimestamp, durationMinutes }: { stepTimestamp?: number; durationMinutes?: number }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!stepTimestamp) return;
+    const update = () => setElapsed(Math.floor((Date.now() - stepTimestamp) / 1000));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [stepTimestamp]);
+
+  if (!stepTimestamp) return null;
+
+  const elapsedMin = Math.floor(elapsed / 60);
+  const elapsedSec = elapsed % 60;
+  const elapsedStr = `${elapsedMin}:${String(elapsedSec).padStart(2, "0")}`;
+
+  if (!durationMinutes) {
+    return (
+      <span className="ml-2 text-xs text-gray-400 tabular-nums">
+        {elapsedStr}
+      </span>
+    );
+  }
+
+  const targetSec = durationMinutes * 60;
+  const overTime = elapsed > targetSec;
+  const overSec = elapsed - targetSec;
+  const overMin = Math.floor(overSec / 60);
+
+  return (
+    <span className={`ml-2 text-xs tabular-nums font-medium ${overTime ? "text-red-400" : "text-green-400"}`}>
+      {elapsedStr} / {durationMinutes}:00
+      {overTime && ` (+${overMin}:${String(overSec % 60).padStart(2, "0")})`}
+    </span>
   );
 }
 
@@ -709,12 +897,9 @@ function InterruptForm({
             onChange={(e) => setInterruptType(e.target.value as StepType)}
             className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-yellow-500"
           >
-            <option value="break">歓談</option>
-            <option value="entry">受付</option>
-            <option value="table_game">テーブルゲーム</option>
-            <option value="whole_game">全体ゲーム</option>
-            <option value="result">結果発表</option>
-            <option value="end">閉会</option>
+            {INSERTABLE_STEP_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
           </select>
         </div>
       </div>

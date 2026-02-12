@@ -1,8 +1,9 @@
 "use client";
 
-import { Room, ScenarioStep, StepType, GameType, GameQuestion } from "@/types/room";
-import { getDefaultMessage } from "./scenarioUtils";
+import { Room, ScenarioStep, StepType, GameType, GameQuestion, RevealConfig, RevealDisplayType } from "@/types/room";
+import { getDefaultMessage, INSERTABLE_STEP_TYPES } from "./scenarioUtils";
 import EntryFieldsEditor from "./EntryFieldsEditor";
+import { pickRandomQuestions } from "@/lib/questionBank";
 
 export interface StepEditFormProps {
   roomId: string;
@@ -11,6 +12,7 @@ export interface StepEditFormProps {
   room: Room;
   onSave: () => void;
   onCancel: () => void;
+  stepIndex?: number;
 }
 
 export default function StepEditForm({
@@ -20,7 +22,9 @@ export default function StepEditForm({
   room,
   onSave,
   onCancel,
+  stepIndex,
 }: StepEditFormProps) {
+  const isEntryLocked = stepIndex === 0 && draft.type === "entry";
   return (
     <div className="space-y-3">
       {/* 基本設定 */}
@@ -39,6 +43,7 @@ export default function StepEditForm({
           <label className="block text-xs text-gray-500 mb-1">タイプ</label>
           <select
             value={draft.type}
+            disabled={isEntryLocked}
             onChange={(e) => {
               const newType = e.target.value as StepType;
               const updates: Partial<ScenarioStep> = { type: newType };
@@ -46,26 +51,44 @@ export default function StepEditForm({
                 updates.gameType = undefined;
                 updates.config = undefined;
               }
-              if (newType !== "survey" && newType !== "survey_result") {
+              if (newType !== "survey" && newType !== "survey_open" && newType !== "survey_result") {
                 updates.survey = undefined;
               }
               if (newType === "survey") {
                 updates.survey = { question: "", options: ["", ""] };
               }
+              if (newType === "survey_open") {
+                updates.survey = { question: "", options: [] };
+              }
+              if (newType === "reveal") {
+                updates.reveal = { sourceStepIndex: 0, displayType: "list" };
+              }
+              if (newType !== "reveal") {
+                updates.reveal = undefined;
+              }
               updateDraft(updates);
             }}
-            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
           >
-            <option value="entry">受付</option>
-            <option value="table_game">テーブルゲーム</option>
-            <option value="whole_game">全体ゲーム</option>
-            <option value="break">歓談</option>
-            <option value="survey">アンケート</option>
-            <option value="survey_result">アンケート結果</option>
-            <option value="result">結果発表</option>
-            <option value="end">閉会</option>
+            {draft.type === "entry" && <option value="entry">受付</option>}
+            {INSERTABLE_STEP_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
           </select>
         </div>
+      </div>
+
+      {/* 所要時間 */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">所要時間（分）</label>
+        <input
+          type="number"
+          min="0"
+          value={draft.durationMinutes || ""}
+          onChange={(e) => updateDraft({ durationMinutes: Number(e.target.value) || undefined })}
+          placeholder="例: 15"
+          className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+        />
       </div>
 
       {/* タイプ別設定 */}
@@ -84,30 +107,20 @@ export default function StepEditForm({
 
       {(draft.type === "table_game" || draft.type === "whole_game") && (
         <div className="space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">ゲームタイプ</label>
-              <select
-                value={draft.gameType || ""}
-                onChange={(e) => updateDraft({ gameType: (e.target.value || undefined) as GameType | undefined })}
-                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              >
-                <option value="">未設定</option>
-                <option value="value_match">価値観マッチ</option>
-                <option value="seno">せーの！</option>
-                <option value="streams">ストリームス</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">制限時間（秒）</label>
-              <input
-                type="number"
-                value={draft.config?.timeLimit || ""}
-                onChange={(e) => updateDraft({ config: { ...draft.config, timeLimit: Number(e.target.value) || undefined } })}
-                placeholder="30"
-                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              />
-            </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">ゲームタイプ</label>
+            <select
+              value={draft.gameType || ""}
+              onChange={(e) => updateDraft({ gameType: (e.target.value || undefined) as GameType | undefined })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="">未設定</option>
+              <option value="tuning_gum">チューニングガム</option>
+              <option value="good_line">いい線行きましょう</option>
+              <option value="evens">みんなのイーブン</option>
+              <option value="krukkurin">くるっくりん</option>
+              <option value="meta_streams">メタストリームス</option>
+            </select>
           </div>
           {/* お題リスト */}
           <div>
@@ -138,6 +151,28 @@ export default function StepEditForm({
               >
                 + お題を追加
               </button>
+              {draft.gameType && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      const preset = pickRandomQuestions(draft.gameType!, 1);
+                      updateDraft({ config: { ...draft.config, questions: [...(draft.config?.questions || []), ...preset] } });
+                    }}
+                    className="flex-1 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-indigo-100 rounded text-xs font-semibold transition"
+                  >
+                    プリセット1問追加
+                  </button>
+                  <button
+                    onClick={() => {
+                      const preset = pickRandomQuestions(draft.gameType!, 5);
+                      updateDraft({ config: { ...draft.config, questions: [...(draft.config?.questions || []), ...preset] } });
+                    }}
+                    className="flex-1 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-indigo-100 rounded text-xs font-semibold transition"
+                  >
+                    プリセット5問追加
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -189,6 +224,58 @@ export default function StepEditForm({
               <span className="text-blue-400">（Step {draft.survey.questionStepIndex + 1} の結果）</span>
             )}
           </p>
+        </div>
+      )}
+
+      {/* アンケート回答（フリーテキスト）設定 */}
+      {draft.type === "survey_open" && (
+        <div className="space-y-2">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">質問文</label>
+            <input
+              type="text"
+              value={draft.survey?.question || ""}
+              onChange={(e) => updateDraft({ survey: { ...draft.survey!, question: e.target.value } })}
+              placeholder="例: 主催へのひとことをどうぞ！"
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 回答開示設定 */}
+      {draft.type === "reveal" && (
+        <div className="space-y-2">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">参照ステップ</label>
+            <select
+              value={draft.reveal?.sourceStepIndex ?? 0}
+              onChange={(e) => updateDraft({ reveal: { ...draft.reveal!, sourceStepIndex: Number(e.target.value) } })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              {(room.scenario?.steps || []).map((s, i) => {
+                if (s.type !== "survey" && s.type !== "survey_open" && s.type !== "table_game" && s.type !== "whole_game") return null;
+                return (
+                  <option key={i} value={i}>
+                    Step {i + 1}: {s.label}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">表示形式</label>
+            <select
+              value={draft.reveal?.displayType || "list"}
+              onChange={(e) => updateDraft({ reveal: { ...draft.reveal!, displayType: e.target.value as RevealDisplayType } })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="list">一覧</option>
+              <option value="bar_chart">棒グラフ</option>
+              <option value="pie_chart">円グラフ</option>
+              <option value="scoreboard">スコアボード</option>
+            </select>
+          </div>
         </div>
       )}
 

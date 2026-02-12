@@ -111,7 +111,20 @@ export default function EntryFieldsEditor({
               </span>
             </div>
             {field.id !== "name" && !isEditing && (
-              <div className="flex gap-1 shrink-0">
+              <div className="flex items-center gap-1 shrink-0">
+                <label className="flex items-center gap-1 text-xs text-gray-500 mr-1" title="テーブル情報に表示">
+                  <input
+                    type="checkbox"
+                    checked={field.showInHeader || false}
+                    onChange={async (e) => {
+                      const newFields = fields.map((f, j) =>
+                        j === i ? { ...f, showInHeader: e.target.checked || undefined } : f
+                      );
+                      await updateEntryFields(roomId, newFields);
+                    }}
+                  />
+                  卓表示
+                </label>
                 <button
                   onClick={() => handleEdit(i)}
                   className="text-xs text-gray-400 hover:text-white transition"

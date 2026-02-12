@@ -3,14 +3,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getRoom, addPlayer, subscribeToPlayer, subscribeToRoom, subscribeToPlayers, subscribeToMessages, registerPresence } from "@/lib/room";
 import { ensureAnonymousUser } from "@/lib/firebase";
-import { Room, Player, EntryField, ScenarioStep, TimelineSnapshot, AdminMessage } from "@/types/room";
+import { Room, Player, EntryField, TimelineSnapshot, AdminMessage } from "@/types/room";
 import { loadSnapshots, saveSnapshots } from "@/lib/timeline";
-import { TimelineCard } from "./TimelineCard";
-import { MessageCard } from "./MessageCard";
 import { SurveyInput } from "./SurveyInput";
+import { SurveyOpenInput } from "./SurveyOpenInput";
 import { SurveyResults } from "./SurveyResults";
 import { GameQuestion } from "./GameQuestion";
+import { PastGameLog } from "./PastGameLog";
+import { RevealDisplay } from "./RevealDisplay";
 import { MissingFieldsForm } from "./MissingFieldsForm";
+import { PlayerTimeline } from "./PlayerTimeline";
+import { StreamsBoard } from "./StreamsBoard";
 
 // 参加者エントリーフォーム + タイムライン
 export function EntryForm({ roomId }: { roomId: string }) {
@@ -104,11 +107,25 @@ export function EntryForm({ roomId }: { roomId: string }) {
     return unsub;
   }, [roomId, playerId]);
 
-  // スナップショットをキャプチャする関数
+  // Published table number
+  // publishedTables があれば published の値を使う、なければ 0（プッシュされるまで見えない）
+  const publishedTableNumber = (() => {
+    if (!playerId) return 0;
+    return room?.publishedTables?.assignments?.[playerId] ?? 0;
+  })();
+  const publishedAssignments = room?.publishedTables?.assignments;
+
+  // スナップショットをキャプチャする関数（publishedTablesを使用）
   const buildSnapshot = useCallback((): TimelineSnapshot => {
-    const tableNum = playerData?.tableNumber ?? 0;
+    const tableNum = publishedTableNumber;
     const tablemates: string[] = [];
-    if (tableNum > 0 && allPlayers && playerId) {
+    if (tableNum > 0 && allPlayers && playerId && publishedAssignments) {
+      Object.entries(publishedAssignments).forEach(([pid, tNum]) => {
+        if (pid !== playerId && tNum === tableNum && allPlayers[pid]) {
+          tablemates.push(allPlayers[pid].name);
+        }
+      });
+    } else if (tableNum > 0 && allPlayers && playerId) {
       Object.entries(allPlayers).forEach(([pid, p]) => {
         if (pid !== playerId && p.tableNumber === tableNum) {
           tablemates.push(p.name);
@@ -116,7 +133,7 @@ export function EntryForm({ roomId }: { roomId: string }) {
       });
     }
     return { tableNumber: tableNum, tablemates, capturedAt: Date.now() };
-  }, [playerData, allPlayers, playerId]);
+  }, [playerData, allPlayers, playerId, publishedTableNumber, publishedAssignments]);
 
   // スナップショット更新:
   // - 過去のステップ（0..currentStep-1）: スナップショットがなければ現在データでキャプチャ（リロード対応）
@@ -269,124 +286,151 @@ export function EntryForm({ roomId }: { roomId: string }) {
 
   // エントリー完了後：タイムライン表示
   if (playerId && playerData) {
-    const steps = room.scenario?.steps || [];
     const currentStep = room.state.currentStep;
-
-    // メッセージをターゲットでフィルタ
-    const filteredMessages: AdminMessage[] = messages
-      ? Object.values(messages).filter((msg) => {
-          if (msg.target.type === "all") return true;
-          if (msg.target.type === "table" && msg.target.tableNumber === playerData.tableNumber) return true;
-          if (msg.target.type === "player" && msg.target.playerId === playerId) return true;
-          return false;
-        })
-      : [];
-
-    // ステップカードとメッセージを時系列で統合
-    type TimelineItem =
-      | { kind: "step"; index: number; step: ScenarioStep }
-      | { kind: "message"; message: AdminMessage };
-
-    const timelineItems: TimelineItem[] = [];
-    for (let idx = 0; idx <= currentStep; idx++) {
-      timelineItems.push({ kind: "step", index: idx, step: steps[idx] });
-      // このステップ中に送信されたメッセージを挿入
-      const stepMessages = filteredMessages
-        .filter((m) => m.sentDuringStep === idx)
-        .sort((a, b) => a.sentAt - b.sentAt);
-      for (const msg of stepMessages) {
-        timelineItems.push({ kind: "message", message: msg });
-      }
-    }
+    const allMessages = messages ? Object.values(messages) : [];
 
     return (
       <main className="min-h-screen flex flex-col p-4">
         <div className="w-full max-w-md mx-auto">
-          {/* ヘッダー（固定表示） */}
-          <div className="text-center mb-4 sticky top-0 bg-gray-950/90 backdrop-blur py-3 z-10">
-            <h1 className="text-lg font-bold">{room.config.eventName}</h1>
-            <p className="text-gray-400 text-xs">{room.config.eventDate}</p>
-          </div>
+          <PlayerTimeline
+            room={room}
+            playerData={playerData}
+            playerId={playerId}
+            allPlayers={allPlayers}
+            entryFields={entryFields}
+            snapshots={snapshots}
+            publishedTableNumber={publishedTableNumber}
+            publishedAssignments={publishedAssignments}
+            messages={allMessages}
+          >
+            {({ step, index: idx, isCurrent }) => (
+              <>
+                {/* 追加エントリー項目（entryタイプ＆現在ステップ） */}
+                {step.type === "entry" && isCurrent && (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <MissingFieldsForm
+                      roomId={roomId}
+                      playerId={playerId}
+                      player={playerData}
+                      entryFields={entryFields}
+                    />
+                  </div>
+                )}
+                {/* アンケート入力（surveyタイプ） */}
+                {step.type === "survey" && step.survey && (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <SurveyInput
+                      roomId={roomId}
+                      stepIndex={idx}
+                      step={step}
+                      playerId={playerId}
+                      playerName={playerData.name}
+                      tableNumber={publishedTableNumber}
+                      existingResponse={room.stepResponses?.[String(idx)]?.[playerId]}
+                    />
+                  </div>
+                )}
+                {/* アンケート回答（survey_openタイプ） */}
+                {step.type === "survey_open" && step.survey && (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <SurveyOpenInput
+                      roomId={roomId}
+                      stepIndex={idx}
+                      step={step}
+                      playerId={playerId}
+                      playerName={playerData.name}
+                      tableNumber={publishedTableNumber}
+                      existingResponse={room.stepResponses?.[String(idx)]?.[playerId]}
+                    />
+                  </div>
+                )}
+                {/* アンケート結果表示（survey_resultタイプ） */}
+                {step.type === "survey_result" && step.survey?.questionStepIndex !== undefined && (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <SurveyResults
+                      room={room}
+                      questionStepIndex={step.survey.questionStepIndex}
+                      playerTableNumber={publishedTableNumber}
+                      playerId={playerId}
+                    />
+                  </div>
+                )}
+                {/* ゲームのお題・回答 */}
+                {(step.type === "table_game" || step.type === "whole_game") && (() => {
+                  const isStreamsGame = step.gameType === "krukkurin" || step.gameType === "meta_streams";
 
-          {/* タイムライン */}
-          <div className="pb-8">
-            {timelineItems.map((item, i) => {
-              if (item.kind === "message") {
-                return <MessageCard key={`msg-${item.message.id}`} message={item.message} senderName={room.config.adminName} />;
-              }
-              const idx = item.index;
-              return (
-                <div key={`step-${idx}`}>
-                  <TimelineCard
-                    stepIndex={idx}
-                    step={item.step}
-                    player={playerData}
-                    snapshot={snapshots[idx]}
-                    prevSnapshot={idx > 0 ? snapshots[idx - 1] : undefined}
-                    isCurrent={idx === currentStep}
-                    entryFields={entryFields}
-                    allPlayers={allPlayers}
-                    playerId={playerId}
-                  />
-                  {/* 追加エントリー項目（entryタイプ＆現在ステップ） */}
-                  {item.step.type === "entry" && idx === currentStep && (
-                    <div className="relative pl-6 pb-2 -mt-4">
-                      <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
-                      <MissingFieldsForm
-                        roomId={roomId}
-                        playerId={playerId}
-                        player={playerData}
-                        entryFields={entryFields}
-                      />
-                    </div>
-                  )}
-                  {/* アンケート入力（現在ステップ＆surveyタイプ） */}
-                  {item.step.type === "survey" && item.step.survey && idx === currentStep && (
-                    <div className="relative pl-6 pb-2 -mt-4">
-                      <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
-                      <SurveyInput
-                        roomId={roomId}
-                        stepIndex={idx}
-                        step={item.step}
-                        playerId={playerId}
-                        playerName={playerData.name}
-                        tableNumber={playerData.tableNumber}
-                        existingResponse={room.stepResponses?.[String(idx)]?.[playerId]}
-                      />
-                    </div>
-                  )}
-                  {/* アンケート結果表示（survey_resultタイプ） */}
-                  {item.step.type === "survey_result" && item.step.survey?.questionStepIndex !== undefined && (
-                    <div className="relative pl-6 pb-2 -mt-4">
-                      <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
-                      <SurveyResults
+                  // 現在ステップ: Streams系ゲーム
+                  if (isCurrent && isStreamsGame && room.currentGame?.streams) {
+                    return (
+                      <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                        <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                        <StreamsBoard
+                          roomId={roomId}
+                          room={room}
+                          playerId={playerId}
+                        />
+                      </div>
+                    );
+                  }
+
+                  // 現在ステップ: 通常ゲーム（Q&A式）
+                  if (isCurrent && !isStreamsGame && room.currentGame?.questions && Object.keys(room.currentGame.questions).length > 0) {
+                    return (
+                      <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                        <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                        <GameQuestion
+                          roomId={roomId}
+                          room={room}
+                          playerId={playerId}
+                          playerName={playerData.name}
+                          tableNumber={publishedTableNumber}
+                          allPlayers={allPlayers}
+                          stepGameType={step.gameType}
+                        />
+                      </div>
+                    );
+                  }
+                  // 過去ステップ: 保存済みゲーム結果を表示
+                  const pastResult = room.gameResults?.[String(idx)];
+                  if (!isCurrent && pastResult) {
+                    return (
+                      <div className="relative pl-6 pb-2 -mt-4" style={{ animationDelay: "0.15s" }}>
+                        <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                        <PastGameLog
+                          gameResult={pastResult}
+                          playerId={playerId}
+                          allPlayers={allPlayers}
+                        />
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+                {/* 汎用回答開示（revealタイプ） */}
+                {step.type === "reveal" && step.reveal && (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+                      <RevealDisplay
                         room={room}
-                        questionStepIndex={item.step.survey.questionStepIndex}
-                        playerTableNumber={playerData.tableNumber}
+                        sourceStepIndex={step.reveal.sourceStepIndex}
+                        displayType={step.reveal.displayType}
+                        scope={step.reveal.scope}
                         playerId={playerId}
+                        playerTableNumber={publishedTableNumber}
+                        allPlayers={allPlayers}
                       />
                     </div>
-                  )}
-                  {/* ゲームのお題・回答（現在ステップ＆ゲーム系＆お題あり） */}
-                  {(item.step.type === "table_game" || item.step.type === "whole_game") &&
-                    idx === currentStep &&
-                    room.currentGame?.questions && Object.keys(room.currentGame.questions).length > 0 && (
-                    <div className="relative pl-6 pb-2 -mt-4">
-                      <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
-                      <GameQuestion
-                        roomId={roomId}
-                        room={room}
-                        playerId={playerId}
-                        playerName={playerData.name}
-                        tableNumber={playerData.tableNumber}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div ref={timelineEndRef} />
-          </div>
+                  </div>
+                )}
+              </>
+            )}
+          </PlayerTimeline>
+          <div ref={timelineEndRef} />
         </div>
       </main>
     );

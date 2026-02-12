@@ -1,9 +1,10 @@
 import { Player, ScenarioStep, StepDisplayConfig, TimelineSnapshot } from "@/types/room";
 
 // メッセージ中のプレースホルダー置換
-export function resolveMessage(template: string, player: Player): string {
+export function resolveMessage(template: string, player: Player, publishedTableNumber?: number): string {
+  const tableNum = publishedTableNumber ?? player.tableNumber;
   return template
-    .replace(/\{tableNumber\}/g, String(player.tableNumber))
+    .replace(/\{tableNumber\}/g, String(tableNum))
     .replace(/\{name\}/g, player.name);
 }
 
@@ -20,6 +21,10 @@ export function getDefaultDisplay(step: ScenarioStep): StepDisplayConfig {
       return { message: "アンケートに回答してください" };
     case "survey_result":
       return { message: "アンケート結果" };
+    case "reveal":
+      return { message: "回答開示" };
+    case "participants":
+      return { message: "テーブル一覧" };
     default:
       return { message: step.label };
   }

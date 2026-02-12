@@ -13,12 +13,14 @@ import {
   updateAdminName,
   updateEventName,
   updateEventDate,
+  publishTables,
 } from "@/lib/room";
 import { Room, Player, EntryField } from "@/types/room";
 import { ensureAnonymousUser } from "@/lib/firebase";
 import RoomInfoPanel from "@/components/admin/RoomInfoPanel";
 import ScenarioPanel from "@/components/admin/ScenarioPanel";
 import PlayersPanel from "@/components/admin/PlayersPanel";
+import PlayerPreviewPanel from "@/components/admin/PlayerPreviewPanel";
 
 export default function AdminRoomPage() {
   const params = useParams();
@@ -181,11 +183,16 @@ export default function AdminRoomPage() {
     setAssigningPlayer(null);
   };
 
+  // テーブル情報プッシュ
+  const handlePublishTables = async () => {
+    await publishTables(roomId);
+  };
+
   // 受付開始前かどうか（currentStep が 0 なら受付前と判定）
   const isBeforeEntry = room?.state.currentStep === 0 && room?.state.phase === "waiting";
 
-  // 管理画面タブ（進行中はルーム情報を隠して台本パネルを広く使える）
-  const [adminTab, setAdminTab] = useState<"all" | "scenario">("all");
+  // 管理画面タブ
+  const [adminTab, setAdminTab] = useState<"all" | "scenario" | "preview">("all");
 
   // 参加者URL
   const participantUrl =
@@ -297,6 +304,12 @@ export default function AdminRoomPage() {
           >
             進行集中
           </button>
+          <button
+            onClick={() => setAdminTab("preview")}
+            className={`px-3 py-1.5 rounded text-xs font-medium transition ${adminTab === "preview" ? "bg-cyan-600 text-white" : "text-gray-400 hover:text-gray-200"}`}
+          >
+            参加者イメージ
+          </button>
         </div>
       </header>
 
@@ -346,10 +359,12 @@ export default function AdminRoomPage() {
               setAssigningPlayer={setAssigningPlayer}
               onAssignTable={handleAssignTable}
               onKickPlayer={handleKickPlayer}
+              roomId={roomId}
+              onPublishTables={handlePublishTables}
             />
           </div>
         </div>
-      ) : (
+      ) : adminTab === "scenario" ? (
         /* 進行集中モード: 台本パネルをワイド + 参加者をサイドに */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
           <div className="lg:col-span-8">
@@ -368,6 +383,32 @@ export default function AdminRoomPage() {
               setAssigningPlayer={setAssigningPlayer}
               onAssignTable={handleAssignTable}
               onKickPlayer={handleKickPlayer}
+              roomId={roomId}
+              onPublishTables={handlePublishTables}
+            />
+          </div>
+        </div>
+      ) : (
+        /* 参加者イメージ: プッシュ状態 + 履歴 */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
+          <div className="lg:col-span-8">
+            <PlayerPreviewPanel
+              room={room}
+              players={players}
+              onPublishTables={handlePublishTables}
+            />
+          </div>
+          <div className="lg:col-span-4">
+            <PlayersPanel
+              room={room}
+              players={players}
+              playersByTable={playersByTable}
+              assigningPlayer={assigningPlayer}
+              setAssigningPlayer={setAssigningPlayer}
+              onAssignTable={handleAssignTable}
+              onKickPlayer={handleKickPlayer}
+              roomId={roomId}
+              onPublishTables={handlePublishTables}
             />
           </div>
         </div>
