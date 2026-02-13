@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Room, ScenarioStep, GameType, PlayerBoard } from "@/types/room";
+import { Room, ScenarioStep, GameType } from "@/types/room";
 import { initStreamsGame, flipCard } from "@/lib/room";
+import { getColorStyle, getColorLabel } from "@/lib/deckGenerator";
 
 interface StreamsControlsProps {
   roomId: string;
@@ -26,6 +27,7 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
   const streams = currentGame?.streams;
   const boards = currentGame?.boards;
   const gameType = step.gameType as GameType;
+  const isKrukkurin = gameType === "krukkurin";
 
   const handleStartGame = async () => {
     await initStreamsGame(roomId, gameType);
@@ -38,7 +40,6 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
     setFlipping(false);
   };
 
-  // プレイヤー情報の収集
   const playerEntries = boards
     ? Object.entries(boards).map(([pid, board]) => ({
         pid,
@@ -47,12 +48,13 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
       }))
     : [];
 
-  // 全アクティブプレイヤーがacted済みかチェック
   const activePlayers = playerEntries.filter((p) => !p.board.eliminated && !p.board.completed);
   const allActed = activePlayers.length > 0 && activePlayers.every((p) => p.board.acted);
   const allOut = activePlayers.length === 0 && playerEntries.length > 0;
 
   const deckRemaining = streams ? streams.deck.length - (streams.currentCardIdx + 1) : 0;
+  const cardsPerFlip = isKrukkurin ? 2 : 1;
+  const flipsRemaining = Math.floor(deckRemaining / cardsPerFlip);
   const hasFlippedCard = !!streams?.currentCard;
 
   return (
@@ -83,21 +85,39 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
               <span className="px-1.5 py-0.5 bg-green-900 text-green-300 rounded">実行中</span>
               <span>{gameTypeLabel(currentGame!.type)}</span>
               <span className="text-gray-600">|</span>
-              <span>残り {deckRemaining}枚</span>
+              <span>残り {flipsRemaining}回</span>
             </div>
           </div>
 
           {/* 現在のカード */}
           {hasFlippedCard && streams.currentCard && (
-            <div className="mb-3 p-4 bg-gradient-to-br from-purple-900/40 to-indigo-900/40 rounded-lg border border-purple-700/50 text-center">
-              <p className="text-xs text-purple-400 mb-1">現在のカード</p>
-              <div className="text-4xl font-black text-white mb-1">
-                {streams.currentCard.number}
+            isKrukkurin && streams.currentCard.items ? (
+              <div className="mb-3 p-4 bg-gradient-to-br from-purple-900/40 to-indigo-900/40 rounded-lg border border-purple-700/50 text-center">
+                <p className="text-xs text-purple-400 mb-2">現在のカード</p>
+                <div className="flex items-center justify-center gap-4">
+                  {streams.currentCard.items.map((item, idx) => {
+                    const cs = getColorStyle(item.color);
+                    const label = getColorLabel(item.color);
+                    return (
+                      <div key={idx} className="px-4 py-2 rounded-lg" style={{ backgroundColor: cs.bg, color: cs.text }}>
+                        <span className="text-3xl font-black">{item.number}</span>
+                        <span className="text-lg ml-1">{label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="text-lg font-bold text-yellow-400">
-                {streams.currentCard.points}pt
+            ) : (
+              <div className="mb-3 p-4 bg-gradient-to-br from-purple-900/40 to-indigo-900/40 rounded-lg border border-purple-700/50 text-center">
+                <p className="text-xs text-purple-400 mb-1">現在のカード</p>
+                <div className="text-4xl font-black text-white mb-1">
+                  {streams.currentCard.number}
+                </div>
+                <div className="text-lg font-bold text-yellow-400">
+                  {streams.currentCard.points}pt
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {/* めくるボタン */}
@@ -109,7 +129,7 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
             ) : (
               <button
                 onClick={handleFlip}
-                disabled={flipping || (hasFlippedCard && !allActed) || deckRemaining <= 0}
+                disabled={flipping || (hasFlippedCard && !allActed) || deckRemaining < cardsPerFlip}
                 className={`w-full py-3 rounded text-sm font-semibold transition ${
                   allActed || !hasFlippedCard
                     ? "bg-purple-600 hover:bg-purple-700 text-white animate-pulse"
@@ -175,12 +195,25 @@ export default function StreamsControls({ roomId, room, step }: StreamsControlsP
               <p className="text-xs text-gray-500 mb-1">めくり履歴 ({streams.history.length}枚):</p>
               <div className="flex flex-wrap gap-1">
                 {streams.history.map((card, i) => (
-                  <span
-                    key={i}
-                    className="px-1.5 py-0.5 bg-gray-800 rounded text-xs text-gray-400"
-                  >
-                    {card.number}({card.points})
-                  </span>
+                  isKrukkurin && card.items ? (
+                    <span key={i} className="flex gap-0.5">
+                      {card.items.map((item, j) => {
+                        const cs = getColorStyle(item.color);
+                        return (
+                          <span key={j} className="px-1 py-0.5 rounded text-xs font-bold" style={{ backgroundColor: cs.bg, color: cs.text }}>
+                            {item.number}{getColorLabel(item.color)}
+                          </span>
+                        );
+                      })}
+                    </span>
+                  ) : (
+                    <span
+                      key={i}
+                      className="px-1.5 py-0.5 bg-gray-800 rounded text-xs text-gray-400"
+                    >
+                      {card.number}({card.points})
+                    </span>
+                  )
                 ))}
               </div>
             </div>

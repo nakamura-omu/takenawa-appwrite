@@ -12,6 +12,7 @@ import {
   DEFAULT_SCENARIO_STEPS,
   Phase,
   GameType,
+  GameQuestion as GameQuestionConfig,
   EntryField,
   AdminMessage,
   MessageTarget,
@@ -22,7 +23,7 @@ import {
   RevealConfig,
   PlayerBoard,
 } from "@/types/room";
-import { generateDeck, createEmptyBoard } from "./deckGenerator";
+import { generateDeck, createEmptyBoard, createEmptyColors, KRUKKURIN_CARD_COLORS } from "./deckGenerator";
 
 // ルームIDの生成（英字2文字 + 数字5文字 = 7文字）
 export function generateRoomId(): string {
@@ -151,29 +152,41 @@ export async function updateRoomState(
   await update(stateRef, state);
 }
 
-// 次のステップへ
+// 次のステップへ（ゲーム結果保存 + ステップ遷移をアトミックに実行）
 export async function goToNextStep(roomId: string): Promise<void> {
   const room = await getRoom(roomId);
   if (!room) return;
 
   const currentStep = room.state.currentStep;
   const totalSteps = room.scenario?.steps?.length || 0;
+  if (currentStep >= totalSteps - 1) return;
 
-  // ゲーム結果の自動保存（ゲームステップからの遷移時）
+  const nextStep = currentStep + 1;
+  const roomRef = ref(getDb(), `rooms/${roomId}`);
+
+  // ステップ遷移の基本更新
+  const updates: Record<string, unknown> = {
+    "state/currentStep": nextStep,
+    "state/phase": "waiting",
+    [`state/stepTimestamps/s${nextStep}`]: Date.now(),
+    currentGame: null,
+  };
+
+  // ゲーム結果の自動保存（ゲームステップからの遷移時）— 同じ update に含める
   const currentStepDef = room.scenario?.steps?.[currentStep];
   if (currentStepDef && (currentStepDef.type === "table_game" || currentStepDef.type === "whole_game") && room.currentGame) {
     const cg = room.currentGame;
     const isStreamsGame = cg.type === "krukkurin" || cg.type === "meta_streams";
 
+    let gameResult: GameResult;
     if (isStreamsGame) {
-      // Streams系: boards から累積スコアを取得
       const scores: Record<string, number> = {};
       if (cg.boards) {
         Object.entries(cg.boards).forEach(([pid, board]) => {
           scores[pid] = board.score || 0;
         });
       }
-      const gameResult: GameResult = {
+      gameResult = {
         type: cg.type,
         scope: cg.scope,
         questions: {},
@@ -183,15 +196,26 @@ export async function goToNextStep(roomId: string): Promise<void> {
         streamsHistory: cg.streams?.history || [],
         boards: cg.boards || {},
       };
-      await saveGameResult(roomId, currentStep, gameResult);
     } else {
       const { calculateTotalScores } = await import("./scoring");
-      const scores = calculateTotalScores(
-        cg.type,
-        cg.answers || {},
-        cg.scope,
-      );
-      const gameResult: GameResult = {
+      let scores: Record<string, number>;
+
+      if (cg.scope === "table") {
+        // テーブルゲーム: テーブルごとにスコア計算してマージ
+        const assignments = room.publishedTables?.assignments || {};
+        const tableNumbers = [...new Set(Object.values(assignments))];
+        scores = {};
+        for (const tNum of tableNumbers) {
+          const tableScores = calculateTotalScores(cg.type, cg.answers || {}, "table", tNum, assignments);
+          Object.entries(tableScores).forEach(([pid, score]) => {
+            scores[pid] = (scores[pid] || 0) + score;
+          });
+        }
+      } else {
+        scores = calculateTotalScores(cg.type, cg.answers || {}, cg.scope);
+      }
+
+      gameResult = {
         type: cg.type,
         scope: cg.scope,
         questions: cg.questions || {},
@@ -199,20 +223,16 @@ export async function goToNextStep(roomId: string): Promise<void> {
         scores,
         completedAt: Date.now(),
       };
-      await saveGameResult(roomId, currentStep, gameResult);
     }
-  }
 
-  if (currentStep < totalSteps - 1) {
-    const nextStep = currentStep + 1;
-    const roomRef = ref(getDb(), `rooms/${roomId}`);
-    await update(roomRef, {
-      "state/currentStep": nextStep,
-      "state/phase": "waiting",
-      [`state/stepTimestamps/s${nextStep}`]: Date.now(),
-      currentGame: null,
+    // gameResult を同じ update バッチに含めてアトミックに書き込む
+    const cleanResult = stripUndefined(gameResult);
+    Object.entries(cleanResult as unknown as Record<string, unknown>).forEach(([key, value]) => {
+      updates[`gameResults/${currentStep}/${key}`] = value;
     });
   }
+
+  await update(roomRef, updates);
 }
 
 // 前のステップへ
@@ -269,6 +289,127 @@ export async function advanceGameProgress(roomId: string, nextIndex: number): Pr
   await set(idxRef, nextIndex);
 }
 
+// テーブル自動進行ゲーム開始（全問題を事前ロード）
+export async function startGameWithAutoProgress(
+  roomId: string,
+  gameType: GameType,
+  presetQuestions: GameQuestionConfig[],
+  anonymousMode?: boolean,
+): Promise<void> {
+  const questions: Record<string, Question> = {};
+  const questionOrder: string[] = [];
+  const now = Date.now();
+
+  presetQuestions.forEach((pq, i) => {
+    const qId = `q_${now}_${i}`;
+    const q: Question = {
+      text: pq.text,
+      timeLimit: 0,
+      status: "open",
+      inputType: pq.inputType,
+      sentAt: now + i,
+    };
+    if (pq.inputType === "select" && pq.options) {
+      q.options = pq.options.filter(o => o.trim());
+    }
+    questions[qId] = q;
+    questionOrder.push(qId);
+  });
+
+  const game: CurrentGame = {
+    type: gameType,
+    scope: "table",
+    autoProgress: true,
+    anonymousMode: anonymousMode || undefined,
+    questions,
+    questionOrder,
+    tableProgress: {},
+    activeQuestionId: questionOrder[0],
+    sentQuestionIndices: presetQuestions.map((_, i) => i),
+  };
+
+  const gameRef = ref(getDb(), `rooms/${roomId}/currentGame`);
+  await set(gameRef, stripUndefined(game));
+  await setPhase(roomId, "playing");
+}
+
+// テーブル全員回答チェック＆自動進行
+export async function checkAndAdvanceTable(
+  roomId: string,
+  questionId: string,
+  tableNumber: number,
+): Promise<boolean> {
+  const room = await getRoom(roomId);
+  if (!room?.currentGame?.questionOrder || !room.currentGame.autoProgress) return false;
+  if (room.currentGame.scope !== "table") return false;
+
+  const questionOrder = room.currentGame.questionOrder;
+  const tableKey = `table_${tableNumber}`;
+  const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
+
+  // 既に全問完了 or 対象問題がテーブルの現在の問題でない
+  if (currentIdx >= questionOrder.length) return false;
+  if (questionOrder[currentIdx] !== questionId) return false;
+
+  // publishedAssignments からテーブルメンバーを取得（登録済みプレイヤーのみ）
+  const assignments = room.publishedTables?.assignments || {};
+  const tablePlayers = Object.entries(assignments)
+    .filter(([pid, tNum]) => tNum === tableNumber && room.players?.[pid])
+    .map(([pid]) => pid);
+
+  if (tablePlayers.length === 0) return false;
+
+  // 全員回答済みかチェック
+  const answers = room.currentGame.answers?.[questionId] || {};
+  const allAnswered = tablePlayers.every(pid => pid in answers);
+  if (!allAnswered) return false;
+
+  // テーブル進行
+  await advanceTableProgress(roomId, tableKey, currentIdx + 1);
+  return true;
+}
+
+// 管理者用: テーブルを強制進行
+export async function forceAdvanceTable(
+  roomId: string,
+  tableNumber: number,
+): Promise<void> {
+  const room = await getRoom(roomId);
+  if (!room?.currentGame?.questionOrder) return;
+
+  const tableKey = `table_${tableNumber}`;
+  const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
+  const maxIdx = room.currentGame.questionOrder.length;
+
+  if (currentIdx < maxIdx) {
+    await advanceTableProgress(roomId, tableKey, currentIdx + 1);
+  }
+}
+
+// 管理者用: 全テーブルを特定インデックスまで強制進行
+export async function forceAdvanceAllTables(
+  roomId: string,
+  targetIndex: number,
+): Promise<void> {
+  const room = await getRoom(roomId);
+  if (!room?.currentGame?.questionOrder) return;
+
+  const tableCount = room.config.tableCount;
+  const updates: Record<string, number> = {};
+  for (let t = 1; t <= tableCount; t++) {
+    const tableKey = `table_${t}`;
+    const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
+    if (currentIdx < targetIndex) {
+      updates[`currentGame/tableProgress/${tableKey}`] = targetIndex;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    const roomRef = ref(getDb(), `rooms/${roomId}`);
+    await update(roomRef, updates);
+  }
+}
+
 // お題の送出（ログ形式で蓄積）
 export async function sendQuestion(
   roomId: string,
@@ -300,6 +441,21 @@ export async function sendQuestion(
   }
 
   await update(roomRef, updates);
+}
+
+// 回答の再開（締切→受付中に戻す）
+export async function reopenQuestion(roomId: string, questionId: string): Promise<void> {
+  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/questions/${questionId}/status`);
+  await set(statusRef, "open");
+}
+
+// 回答公開を取り消す（revealed→closedに戻し、revealScopeを削除）
+export async function hideAnswers(roomId: string, questionId: string): Promise<void> {
+  const roomRef = ref(getDb(), `rooms/${roomId}`);
+  await update(roomRef, {
+    [`currentGame/questions/${questionId}/status`]: "closed",
+    [`currentGame/questions/${questionId}/revealScope`]: null,
+  });
 }
 
 // 回答の締切（指定のお題）
@@ -656,6 +812,50 @@ export async function shuffleTables(roomId: string): Promise<void> {
   }
 }
 
+// ========== 色グループスコア計算（くるっくりん用） ==========
+
+const COLOR_GROUP_SCORE = [0, 0, 3, 5, 7, 12, 19]; // index=サイズ, 孤立=0, 6+=19
+
+export function calculateColorScore(rows: number[][], colors: string[][]): number {
+  const numRows = rows.length;
+  if (numRows === 0) return 0;
+
+  let totalScore = 0;
+
+  // 横方向: 各行で同色の連続グループを計算
+  for (let ri = 0; ri < numRows; ri++) {
+    let ci = 0;
+    while (ci < rows[ri].length) {
+      const color = colors[ri]?.[ci];
+      if (!color) { ci++; continue; }
+
+      // 同色の連続をカウント
+      let groupSize = 1;
+      while (ci + groupSize < rows[ri].length && colors[ri]?.[ci + groupSize] === color) {
+        groupSize++;
+      }
+
+      totalScore += groupSize >= 6 ? 19 : COLOR_GROUP_SCORE[groupSize];
+      ci += groupSize;
+    }
+  }
+
+  // 縦方向: 各列で3行全て同色なら +ボーナス（1本目3pt, 2本目4pt, 3本目5pt...）
+  const numCols = Math.max(...rows.map((r) => r.length));
+  if (numRows === 3) {
+    let verticalCount = 0;
+    for (let ci = 0; ci < numCols; ci++) {
+      const c0 = colors[0]?.[ci];
+      if (c0 && c0 === colors[1]?.[ci] && c0 === colors[2]?.[ci]) {
+        verticalCount++;
+        totalScore += 2 + verticalCount; // 3, 4, 5, 6, ...
+      }
+    }
+  }
+
+  return totalScore;
+}
+
 // ========== Streams系ゲーム（くるっくりん / メタストリームス） ==========
 
 // ゲーム開始（デッキ生成→ボード初期化）
@@ -669,10 +869,13 @@ export async function initStreamsGame(
   const deck = generateDeck(gameType);
   const boards: Record<string, PlayerBoard> = {};
 
+  const isKrukkurin = gameType === "krukkurin";
+
   // 全参加者分のボードを初期化
   Object.keys(room.players).forEach((pid) => {
     boards[pid] = {
       rows: createEmptyBoard(gameType),
+      ...(isKrukkurin ? { colors: createEmptyColors(gameType) } : {}),
       passCount: 0,
       eliminated: false,
       completed: false,
@@ -705,34 +908,84 @@ export async function flipCard(roomId: string): Promise<void> {
   if (!room?.currentGame?.streams) return;
 
   const streams = room.currentGame.streams;
-  const nextIdx = streams.currentCardIdx + 1;
+  const gameType = room.currentGame.type;
+  const isKrukkurin = gameType === "krukkurin";
+  const cardsNeeded = isKrukkurin ? 2 : 1;
+
+  const nextIdx = streams.currentCardIdx + cardsNeeded;
   if (nextIdx >= streams.deck.length) return;
 
-  const number = streams.deck[nextIdx];
-  const points = Math.floor(Math.random() * 21) + 5; // 5-25
-  const card = { number, points, flippedAt: Date.now() };
+  const updates: Record<string, unknown> = {};
 
-  // 全プレイヤーの acted をリセット
-  const updates: Record<string, unknown> = {
-    "currentGame/streams/currentCardIdx": nextIdx,
-    "currentGame/streams/currentCard": card,
-  };
+  if (isKrukkurin) {
+    const num1 = streams.deck[streams.currentCardIdx + 1];
+    const num2 = streams.deck[streams.currentCardIdx + 2];
+    const color1 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
+    const color2 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
 
-  // 履歴に追加
-  const history = streams.history || [];
-  updates[`currentGame/streams/history`] = [...history, card];
+    const card = {
+      number: num1,
+      points: 0,
+      items: [
+        { number: num1, color: color1 },
+        { number: num2, color: color2 },
+      ],
+      flippedAt: Date.now(),
+    };
 
-  // 全員のacted をリセット（脱落・完了者を除く）
-  if (room.currentGame.boards) {
-    Object.entries(room.currentGame.boards).forEach(([pid, board]) => {
-      if (!board.eliminated && !board.completed) {
-        updates[`currentGame/boards/${pid}/acted`] = false;
-      }
-    });
+    updates["currentGame/streams/currentCardIdx"] = nextIdx;
+    updates["currentGame/streams/currentCard"] = card;
+
+    const history = streams.history || [];
+    updates["currentGame/streams/history"] = [...history, card];
+
+    // 全員の acted をリセット
+    if (room.currentGame.boards) {
+      Object.entries(room.currentGame.boards).forEach(([pid, board]) => {
+        if (!board.eliminated && !board.completed) {
+          updates[`currentGame/boards/${pid}/acted`] = false;
+        }
+      });
+    }
+  } else {
+    // meta_streams
+    const number = streams.deck[streams.currentCardIdx + 1];
+    const points = Math.floor(Math.random() * 18) + 1;
+    const card = { number, points, flippedAt: Date.now() };
+
+    updates["currentGame/streams/currentCardIdx"] = nextIdx;
+    updates["currentGame/streams/currentCard"] = card;
+
+    const history = streams.history || [];
+    updates["currentGame/streams/history"] = [...history, card];
+
+    if (room.currentGame.boards) {
+      Object.entries(room.currentGame.boards).forEach(([pid, board]) => {
+        if (!board.eliminated && !board.completed) {
+          updates[`currentGame/boards/${pid}/acted`] = false;
+        }
+      });
+    }
   }
 
   const roomRef = ref(getDb(), `rooms/${roomId}`);
   await update(roomRef, updates);
+}
+
+// 最後の生存者ボーナス（+10pt）
+function applyLastSurvivorBonus(
+  boards: Record<string, PlayerBoard>,
+  leavingPlayerId: string,
+  updates: Record<string, unknown>,
+): void {
+  const active = Object.entries(boards).filter(
+    ([pid, b]) => pid !== leavingPlayerId && !b.eliminated && !b.completed,
+  );
+  if (active.length === 1) {
+    const [survivorId, survivorBoard] = active[0];
+    updates[`currentGame/boards/${survivorId}/score`] = survivorBoard.score + 10;
+    updates[`currentGame/boards/${survivorId}/completed`] = true;
+  }
 }
 
 // カードを配置
@@ -741,6 +994,7 @@ export async function placeCard(
   playerId: string,
   rowIndex: number,
   slotIndex: number,
+  itemIndex?: number,  // くるっくりん用: 配置するアイテム (0 or 1)
 ): Promise<{ success: boolean; error?: string }> {
   const room = await getRoom(roomId);
   if (!room?.currentGame?.streams?.currentCard || !room.currentGame.boards) {
@@ -754,62 +1008,74 @@ export async function placeCard(
 
   const card = room.currentGame.streams.currentCard;
   const gameType = room.currentGame.type;
+  const isKrukkurin = gameType === "krukkurin";
   const rows = board.rows;
 
   // バリデーション: 指定マスが空か
-  if (rows[rowIndex]?.[slotIndex] !== null && rows[rowIndex]?.[slotIndex] !== undefined) {
-    return { success: false, error: "そのマスは空いていません" };
-  }
-  if (rows[rowIndex]?.[slotIndex] === undefined) {
+  if (!rows[rowIndex] || rows[rowIndex][slotIndex] === undefined) {
     return { success: false, error: "無効なマス位置です" };
   }
-
-  // くるっくりん: 前回と違う列制約
-  if (gameType === "krukkurin" && board.lastRow !== undefined && board.lastRow === rowIndex) {
-    return { success: false, error: "前回と同じ列には配置できません" };
+  if (rows[rowIndex][slotIndex] !== 0) {
+    return { success: false, error: "そのマスは空いていません" };
   }
 
-  // 昇順バリデーション（左から昇順、同値OK）
-  const row = rows[rowIndex];
-  // 左側のチェック: slotIndex より左にある最も近い数字は card.number 以下でなければならない
-  let leftVal: number | null = null;
-  for (let i = slotIndex - 1; i >= 0; i--) {
-    if (row[i] !== null) {
-      leftVal = row[i];
-      break;
+  // 配置する数字を決定
+  let placeNumber: number;
+  let placeColor = "";
+
+  if (isKrukkurin) {
+    if (itemIndex === undefined || !card.items?.[itemIndex]) {
+      return { success: false, error: "無効なアイテムです" };
     }
+    placeNumber = card.items[itemIndex].number;
+    placeColor = card.items[itemIndex].color;
+  } else {
+    placeNumber = card.number;
   }
-  if (leftVal !== null && leftVal > card.number) {
+
+  // 昇順バリデーション
+  const row = rows[rowIndex];
+  let leftVal = 0;
+  for (let i = slotIndex - 1; i >= 0; i--) {
+    if (row[i] !== 0) { leftVal = row[i]; break; }
+  }
+  if (leftVal !== 0 && leftVal > placeNumber) {
     return { success: false, error: "昇順ルール違反です（左の値より小さい）" };
   }
-  // 右側のチェック: slotIndex より右にある最も近い数字は card.number 以上でなければならない
-  let rightVal: number | null = null;
+  let rightVal = 0;
   for (let i = slotIndex + 1; i < row.length; i++) {
-    if (row[i] !== null) {
-      rightVal = row[i];
-      break;
-    }
+    if (row[i] !== 0) { rightVal = row[i]; break; }
   }
-  if (rightVal !== null && rightVal < card.number) {
+  if (rightVal !== 0 && rightVal < placeNumber) {
     return { success: false, error: "昇順ルール違反です（右の値より大きい）" };
   }
 
   // 配置実行
-  const newScore = board.score + card.points;
   const newRows = rows.map((r) => [...r]);
-  newRows[rowIndex][slotIndex] = card.number;
-
-  // 完了チェック: 全マスが埋まったか
-  const allFilled = newRows.every((r) => r.every((v) => v !== null));
+  newRows[rowIndex][slotIndex] = placeNumber;
+  const allFilled = newRows.every((r) => r.every((v) => v !== 0));
 
   const updates: Record<string, unknown> = {
     [`currentGame/boards/${playerId}/rows`]: newRows,
-    [`currentGame/boards/${playerId}/score`]: newScore,
-    [`currentGame/boards/${playerId}/acted`]: true,
     [`currentGame/boards/${playerId}/completed`]: allFilled,
   };
-  if (gameType === "krukkurin") {
-    updates[`currentGame/boards/${playerId}/lastRow`] = rowIndex;
+
+  if (isKrukkurin) {
+    // 色配置 + スコア再計算
+    const newColors = (board.colors || createEmptyColors(gameType)).map((r: string[]) => [...r]);
+    newColors[rowIndex][slotIndex] = placeColor;
+    const colorScore = calculateColorScore(newRows, newColors);
+    updates[`currentGame/boards/${playerId}/colors`] = newColors;
+    updates[`currentGame/boards/${playerId}/score`] = colorScore - board.passCount;
+    updates[`currentGame/boards/${playerId}/acted`] = true;
+  } else {
+    // meta_streams: 従来のポイント加算
+    updates[`currentGame/boards/${playerId}/score`] = board.score + card.points;
+    updates[`currentGame/boards/${playerId}/acted`] = true;
+  }
+
+  if (allFilled) {
+    applyLastSurvivorBonus(room.currentGame.boards, playerId, updates);
   }
 
   const roomRef = ref(getDb(), `rooms/${roomId}`);
@@ -832,6 +1098,8 @@ export async function passCard(
   if (board.eliminated) return { success: false, error: "脱落済みです" };
   if (board.acted) return { success: false, error: "既にアクション済みです" };
 
+  const gameType = room.currentGame.type;
+  const isKrukkurin = gameType === "krukkurin";
   const newPassCount = board.passCount + 1;
   const isEliminated = newPassCount >= 4;
 
@@ -841,6 +1109,10 @@ export async function passCard(
     [`currentGame/boards/${playerId}/acted`]: true,
     [`currentGame/boards/${playerId}/eliminated`]: isEliminated,
   };
+
+  if (isEliminated) {
+    applyLastSurvivorBonus(room.currentGame.boards, playerId, updates);
+  }
 
   const roomRef = ref(getDb(), `rooms/${roomId}`);
   await update(roomRef, updates);

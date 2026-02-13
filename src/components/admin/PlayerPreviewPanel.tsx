@@ -289,19 +289,23 @@ export default function PlayerPreviewPanel({
                       return null;
                     })()}
                     {/* 回答開示 */}
-                    {step.type === "reveal" && step.reveal && (
+                    {step.type === "reveal" && (
                       <div className="relative pl-6 pb-2 -mt-4" style={{ animationDelay: "0.15s" }}>
                         <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
                         <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
-                          <RevealDisplay
-                            room={room}
-                            sourceStepIndex={step.reveal.sourceStepIndex}
-                            displayType={step.reveal.displayType}
-                            scope={step.reveal.scope}
-                            playerId={activePlayerId}
-                            playerTableNumber={publishedTableNumber}
-                            allPlayers={players}
-                          />
+                          {step.reveal ? (
+                            <RevealDisplay
+                              room={room}
+                              sourceStepIndex={step.reveal.sourceStepIndex}
+                              displayType={step.reveal.displayType}
+                              scope={step.reveal.scope}
+                              playerId={activePlayerId}
+                              playerTableNumber={publishedTableNumber}
+                              allPlayers={players}
+                            />
+                          ) : (
+                            <p className="text-sm text-gray-500">回答開示の設定がありません</p>
+                          )}
                         </div>
                       </div>
                     )}

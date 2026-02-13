@@ -1,6 +1,7 @@
 "use client";
 
-import { Room, Player, StepResponse, GameResult, RevealDisplayType, AnswerRevealScope } from "@/types/room";
+import { Room, Player, StepResponse, GameResult, RevealDisplayType, AnswerRevealScope, GameType } from "@/types/room";
+import { calculateTotalScores } from "@/lib/scoring";
 import { PieChart } from "./PieChart";
 import { ScoreBoard } from "./ScoreBoard";
 
@@ -22,12 +23,14 @@ const CHART_COLORS = [
 export function RevealDisplay({
   room,
   sourceStepIndex,
-  displayType,
+  displayType: rawDisplayType,
   scope,
   playerId,
   playerTableNumber,
   allPlayers,
 }: RevealDisplayProps) {
+  const displayType = rawDisplayType || "list"; // フォールバック
+
   const sourceStep = room.scenario?.steps?.[sourceStepIndex];
   if (!sourceStep) return <p className="text-sm text-gray-500">参照先ステップが見つかりません</p>;
 
@@ -35,11 +38,22 @@ export function RevealDisplay({
   const isGame = sourceStep.type === "table_game" || sourceStep.type === "whole_game";
   const isSurvey = sourceStep.type === "survey" || sourceStep.type === "survey_open";
 
-  // Game results
-  const gameResult: GameResult | undefined = room.gameResults?.[String(sourceStepIndex)];
+  // Game results — Firebase may return array or object for numeric keys, handle all cases
+  const rawGameResults = room.gameResults;
+  let gameResult: GameResult | undefined;
+  if (rawGameResults) {
+    gameResult =
+      rawGameResults[String(sourceStepIndex)]
+      ?? (rawGameResults as unknown as GameResult[])?.[sourceStepIndex]
+      ?? (rawGameResults[sourceStepIndex as unknown as string]);
+    // Firebase が null を返す場合のガード
+    if (gameResult && typeof gameResult !== "object") gameResult = undefined;
+  }
 
-  // Survey responses
-  const surveyResponses: Record<string, StepResponse> | undefined = room.stepResponses?.[String(sourceStepIndex)];
+  // Survey responses — Firebase may return an array for numeric keys, handle both
+  const rawResponses = room.stepResponses?.[String(sourceStepIndex)] ?? room.stepResponses?.[sourceStepIndex as unknown as string];
+  const surveyResponses: Record<string, StepResponse> | undefined =
+    rawResponses && typeof rawResponses === "object" ? rawResponses : undefined;
 
   // Filter responses by scope if needed
   const filterByScope = <T extends { tableNumber?: number }>(
@@ -62,12 +76,31 @@ export function RevealDisplay({
   // === SCOREBOARD ===
   if (displayType === "scoreboard") {
     if (isGame && gameResult) {
-      return (
-        <div>
-          <h4 className="text-xs font-semibold text-gray-400 mb-2">スコアボード</h4>
-          <ScoreBoard scores={gameResult.scores} players={allPlayers} myPlayerId={playerId} />
-        </div>
-      );
+      // スコアが空の場合は answers から再計算
+      let scores = gameResult.scores;
+      if ((!scores || Object.keys(scores).length === 0) && gameResult.answers && gameResult.type) {
+        const assignments = room.publishedTables?.assignments || {};
+        const tableNumbers = [...new Set(Object.values(assignments))];
+        if (gameResult.scope === "table" && tableNumbers.length > 0) {
+          scores = {};
+          for (const tNum of tableNumbers) {
+            const tableScores = calculateTotalScores(gameResult.type as GameType, gameResult.answers, "table", tNum, assignments);
+            Object.entries(tableScores).forEach(([pid, s]) => {
+              scores[pid] = (scores[pid] || 0) + s;
+            });
+          }
+        } else {
+          scores = calculateTotalScores(gameResult.type as GameType, gameResult.answers, gameResult.scope || "whole");
+        }
+      }
+      if (scores && Object.keys(scores).length > 0) {
+        return (
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 mb-2">スコアボード</h4>
+            <ScoreBoard scores={scores} players={allPlayers} myPlayerId={playerId} />
+          </div>
+        );
+      }
     }
     return <p className="text-sm text-gray-500">スコアデータがありません</p>;
   }

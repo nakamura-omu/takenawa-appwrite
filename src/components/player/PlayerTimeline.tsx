@@ -135,7 +135,7 @@ export function PlayerTimeline({
           const idx = item.index;
           const isCurrent = idx === currentStep;
           return (
-            <div key={`step-${idx}`} className={isCurrent ? "animate-panel-in" : undefined}>
+            <div key={`step-${idx}`}>
               <TimelineCard
                 stepIndex={idx}
                 step={item.step}
@@ -143,11 +143,7 @@ export function PlayerTimeline({
                 snapshot={snapshots[idx]}
                 prevSnapshot={idx > 0 ? snapshots[idx - 1] : undefined}
                 isCurrent={isCurrent}
-                entryFields={entryFields}
-                allPlayers={allPlayers}
-                playerId={playerId}
                 publishedTableNumber={publishedTableNumber}
-                publishedAssignments={publishedAssignments}
                 timestamp={room.state.stepTimestamps?.[`s${idx}`] ?? room.state.stepTimestamps?.[String(idx)]}
               />
               {/* 参加者一覧ステップ */}

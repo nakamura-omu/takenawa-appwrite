@@ -1,4 +1,4 @@
-import { ScenarioStep, StepType } from "@/types/room";
+import { StepType } from "@/types/room";
 
 // 挿入・作成可能なステップタイプ一覧（entry / survey_result は特殊扱いのため除外）
 export const INSERTABLE_STEP_TYPES: { value: StepType; label: string }[] = [
@@ -9,21 +9,8 @@ export const INSERTABLE_STEP_TYPES: { value: StepType; label: string }[] = [
   { value: "survey", label: "アンケート集計" },
   { value: "survey_open", label: "アンケート回答依頼" },
   { value: "reveal", label: "回答開示" },
-  { value: "result", label: "結果発表" },
   { value: "end", label: "閉会" },
 ];
-
-// ステップタイプごとのデフォルトメッセージ
-export function getDefaultMessage(step: ScenarioStep): string {
-  switch (step.type) {
-    case "entry": return "エントリー完了！";
-    case "break": return "歓談タイムです";
-    case "end": return "お疲れさまでした！";
-    case "participants": return "テーブル一覧";
-    case "reveal": return "回答開示";
-    default: return step.label;
-  }
-}
 
 // ステップタイプの日本語ラベル
 export function stepTypeLabel(type: StepType): string {
@@ -32,7 +19,6 @@ export function stepTypeLabel(type: StepType): string {
     case "table_game": return "テーブルゲーム";
     case "whole_game": return "全体ゲーム";
     case "break": return "歓談";
-    case "result": return "結果発表";
     case "end": return "閉会";
     case "survey": return "アンケート集計";
     case "survey_open": return "アンケート回答依頼";

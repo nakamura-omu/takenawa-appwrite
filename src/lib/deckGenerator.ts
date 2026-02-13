@@ -52,9 +52,9 @@ export function getBoardLayout(gameType: GameType): { rows: number[]; labels: st
   switch (gameType) {
     case "krukkurin":
       return {
-        rows: [5, 8, 12],
-        labels: ["赤", "青", "黄"],
-        colors: ["bg-red-900/40 border-red-700/50", "bg-blue-900/40 border-blue-700/50", "bg-yellow-900/40 border-yellow-700/50"],
+        rows: [8, 8, 8],
+        labels: ["1列目", "2列目", "3列目"],
+        colors: ["bg-gray-800/40 border-gray-700/50", "bg-gray-800/40 border-gray-700/50", "bg-gray-800/40 border-gray-700/50"],
       };
     case "meta_streams":
       return {
@@ -68,7 +68,38 @@ export function getBoardLayout(gameType: GameType): { rows: number[]; labels: st
 }
 
 // 空ボードを生成
-export function createEmptyBoard(gameType: GameType): (number | null)[][] {
+export function createEmptyBoard(gameType: GameType): number[][] {
   const layout = getBoardLayout(gameType);
-  return layout.rows.map((size) => Array(size).fill(null));
+  return layout.rows.map((size) => Array(size).fill(0));
+}
+
+// 空の色ボードを生成（くるっくりん用）
+export function createEmptyColors(gameType: GameType): string[][] {
+  const layout = getBoardLayout(gameType);
+  return layout.rows.map((size) => Array(size).fill(""));
+}
+
+// くるっくりんカード色
+export const KRUKKURIN_CARD_COLORS = ["red", "blue", "black", "green"] as const;
+
+// 色 → CSSスタイル（Tailwind動的クラスはパージされるためインラインスタイルを使用）
+export function getColorStyle(color: string): { bg: string; text: string; border: string } {
+  switch (color) {
+    case "red":   return { bg: "#dc2626", text: "#ffffff", border: "#f87171" };
+    case "blue":  return { bg: "#2563eb", text: "#ffffff", border: "#60a5fa" };
+    case "black": return { bg: "#111827", text: "#ffffff", border: "#6b7280" };
+    case "green": return { bg: "#16a34a", text: "#ffffff", border: "#4ade80" };
+    default:      return { bg: "#1f2937", text: "#9ca3af", border: "#374151" };
+  }
+}
+
+// 色 → 日本語名
+export function getColorLabel(color: string): string {
+  switch (color) {
+    case "red":   return "赤";
+    case "blue":  return "青";
+    case "black": return "黒";
+    case "green": return "緑";
+    default:      return "";
+  }
 }

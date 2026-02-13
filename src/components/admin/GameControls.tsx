@@ -5,11 +5,16 @@ import { Room, ScenarioStep, GameQuestion, Answer, AnswerRevealScope, GameType }
 import {
   setPhase,
   startGame,
+  startGameWithAutoProgress,
   sendQuestion,
   closeQuestion,
+  reopenQuestion,
   revealAnswers,
+  hideAnswers,
   resetCurrentGame,
   toggleScoreboard,
+  forceAdvanceTable,
+  forceAdvanceAllTables,
 } from "@/lib/room";
 import { calculateTotalScores } from "@/lib/scoring";
 import StreamsControls from "./StreamsControls";
@@ -193,6 +198,14 @@ export default function GameControls({
     startGame(roomId, gameType, scope, false);
   };
 
+  const handleStartAutoProgress = () => {
+    const gameType = step.gameType;
+    if (!gameType) return;
+    const validQuestions = (step.config?.questions || []).filter(q => q?.text?.trim());
+    if (validQuestions.length === 0) return;
+    startGameWithAutoProgress(roomId, gameType, validQuestions);
+  };
+
   // Streams系ゲームは専用コントロールを使用
   const isStreamsGame = step.gameType === "krukkurin" || step.gameType === "meta_streams";
   if (isStreamsGame) {
@@ -209,12 +222,22 @@ export default function GameControls({
           <p className="text-xs text-gray-400 mb-2">
             {gameTypeLabel(step.gameType)} — {step.type === "table_game" ? "テーブル" : "全体"}モード
           </p>
-          <button
-            onClick={handleStartGame}
-            className="w-full py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-semibold transition"
-          >
-            ゲーム開始
-          </button>
+          <div className="space-y-1.5">
+            <button
+              onClick={handleStartGame}
+              className="w-full py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-semibold transition"
+            >
+              ゲーム開始（手動進行）
+            </button>
+            {step.type === "table_game" && presetQuestions.length > 0 && (
+              <button
+                onClick={handleStartAutoProgress}
+                className="w-full py-2 bg-cyan-600 hover:bg-cyan-700 rounded text-sm font-semibold transition"
+              >
+                テーブル自動進行で開始（{presetQuestions.length}問）
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -226,9 +249,99 @@ export default function GameControls({
             <span>{gameTypeLabel(currentGame.type)}</span>
             <span className="text-gray-600">|</span>
             <span>{currentGame.scope === "table" ? "テーブル" : "全体"}</span>
+            {currentGame.autoProgress && (
+              <span className="px-1.5 py-0.5 bg-cyan-900 text-cyan-300 rounded">自動進行</span>
+            )}
           </div>
         </div>
       )}
+
+      {/* テーブル自動進行の進捗表示 */}
+      {isGameActive && currentGame.autoProgress && currentGame.questionOrder && (() => {
+        const questionOrder = currentGame.questionOrder!;
+        const totalQ = questionOrder.length;
+        const tableCount = room.config.tableCount;
+        const tableProgress = currentGame.tableProgress || {};
+
+        // テーブルごとの回答状況を集計
+        const assignments = room.publishedTables?.assignments || {};
+        const getTablePlayerCount = (t: number) =>
+          Object.entries(assignments).filter(([pid, tNum]) => tNum === t && room.players?.[pid]).length;
+        const getTableAnswerCount = (t: number, qIdx: number) => {
+          if (qIdx >= totalQ) return 0;
+          const qId = questionOrder[qIdx];
+          const ans = currentGame.answers?.[qId] || {};
+          return Object.entries(assignments)
+            .filter(([pid, tNum]) => tNum === t && room.players?.[pid] && ans[pid])
+            .length;
+        };
+
+        const allDone = Array.from({ length: tableCount }, (_, i) => i + 1)
+          .every(t => (tableProgress[`table_${t}`] ?? 0) >= totalQ);
+
+        return (
+          <div className="mb-3 p-2 bg-gray-800 rounded border border-gray-700">
+            <p className="text-xs text-gray-500 mb-2">テーブル進捗（全{totalQ}問）</p>
+            <div className="space-y-1.5">
+              {Array.from({ length: tableCount }, (_, i) => i + 1).map(t => {
+                const progress = tableProgress[`table_${t}`] ?? 0;
+                const isDone = progress >= totalQ;
+                const playerCount = getTablePlayerCount(t);
+                const currentAnswers = getTableAnswerCount(t, progress);
+
+                if (playerCount === 0) return null;
+
+                return (
+                  <div key={t} className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 w-8 shrink-0">T{t}</span>
+                    {/* プログレスバー */}
+                    <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${isDone ? "bg-green-500" : "bg-cyan-500"}`}
+                        style={{ width: `${Math.round((progress / totalQ) * 100)}%` }}
+                      />
+                    </div>
+                    <span className={`text-xs w-16 shrink-0 text-right ${isDone ? "text-green-400" : "text-gray-300"}`}>
+                      {isDone ? "完了" : `${progress + 1}問目`}
+                    </span>
+                    {!isDone && (
+                      <>
+                        <span className="text-xs text-gray-500 w-12 shrink-0 text-right">
+                          {currentAnswers}/{playerCount}
+                        </span>
+                        <button
+                          onClick={() => forceAdvanceTable(roomId, t)}
+                          className="px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 rounded text-xs transition shrink-0"
+                          title="強制的に次の問題へ"
+                        >
+                          Skip
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {!allDone && (
+              <button
+                onClick={() => {
+                  // 最も遅いテーブルの進捗 + 1 まで全テーブルを進行
+                  const minProgress = Math.min(
+                    ...Array.from({ length: tableCount }, (_, i) => tableProgress[`table_${i + 1}`] ?? 0)
+                  );
+                  forceAdvanceAllTables(roomId, minProgress + 1);
+                }}
+                className="mt-2 w-full py-1 bg-yellow-700 hover:bg-yellow-600 rounded text-xs font-semibold transition"
+              >
+                遅れているテーブルを次の問題へ
+              </button>
+            )}
+            {allDone && (
+              <p className="mt-2 text-xs text-green-400 font-semibold text-center">全テーブル完了!</p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 事前設定のお題リスト */}
       {hasPresets && (
@@ -329,6 +442,7 @@ export default function GameControls({
 
                       {/* 操作ボタン行 */}
                       <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                        {/* 締切 ↔ 受付再開 */}
                         {q.status === "open" && (
                           <button
                             onClick={() => closeQuestion(roomId, qId)}
@@ -337,7 +451,23 @@ export default function GameControls({
                             締切
                           </button>
                         )}
-                        {q.status !== "revealed" && (
+                        {q.status === "closed" && (
+                          <button
+                            onClick={() => reopenQuestion(roomId, qId)}
+                            className="px-2 py-0.5 bg-green-700 hover:bg-green-600 rounded text-xs transition"
+                          >
+                            受付再開
+                          </button>
+                        )}
+                        {/* 公開 ↔ 非公開 */}
+                        {q.status === "revealed" ? (
+                          <button
+                            onClick={() => hideAnswers(roomId, qId)}
+                            className="px-2 py-0.5 bg-gray-600 hover:bg-gray-500 rounded text-xs transition"
+                          >
+                            非公開に戻す
+                          </button>
+                        ) : (
                           <>
                             <button
                               onClick={() => revealAnswers(roomId, qId, { type: "all" })}
@@ -489,7 +619,7 @@ export default function GameControls({
                   : "bg-gray-700 hover:bg-gray-600 text-gray-300"
               }`}
             >
-              {isScoreboardOn ? "参加者に表示中" : "参加者に表示"}
+              {isScoreboardOn ? "参加者にスコア表示中" : "参加者にスコアを表示"}
             </button>
           </div>
           {showScores && (

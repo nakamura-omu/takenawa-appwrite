@@ -1,7 +1,7 @@
 "use client";
 
-import { GameResult, Player, PlayerBoard } from "@/types/room";
-import { getBoardLayout } from "@/lib/deckGenerator";
+import { GameResult, Player } from "@/types/room";
+import { getBoardLayout, getColorStyle } from "@/lib/deckGenerator";
 
 interface PastGameLogProps {
   gameResult: GameResult;
@@ -29,18 +29,25 @@ function StreamsPastResult({
               <span className="text-xs text-gray-500">{layout.labels[ri]}</span>
             )}
             <div className="flex flex-wrap gap-1">
-              {row.map((val, si) => (
-                <span
-                  key={si}
-                  className={`w-8 h-8 rounded text-xs font-bold flex items-center justify-center ${
-                    val !== null
-                      ? "bg-gray-700 text-white border border-gray-600"
-                      : "bg-gray-800/60 text-gray-600 border border-gray-700/50"
-                  }`}
-                >
-                  {val !== null ? val : "_"}
-                </span>
-              ))}
+              {row.map((val, si) => {
+                const cellColor = myBoard.colors?.[ri]?.[si];
+                const cs = cellColor ? getColorStyle(cellColor) : null;
+                return (
+                  <span
+                    key={si}
+                    style={val !== null && cs ? { backgroundColor: cs.bg, color: cs.text, borderColor: cs.border } : undefined}
+                    className={`w-8 h-8 rounded text-xs font-bold flex items-center justify-center ${
+                      val !== null && cs
+                        ? "border"
+                        : val !== null
+                        ? "bg-gray-700 text-white border border-gray-600"
+                        : "bg-gray-800/60 text-gray-600 border border-gray-700/50"
+                    }`}
+                  >
+                    {val !== null ? val : "_"}
+                  </span>
+                );
+              })}
             </div>
           </div>
         ))}

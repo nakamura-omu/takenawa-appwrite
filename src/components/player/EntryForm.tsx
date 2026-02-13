@@ -143,26 +143,13 @@ export function EntryForm({ roomId }: { roomId: string }) {
     if (!room || !playerData || !playerId || !allPlayers) return;
 
     const currentStep = room.state.currentStep;
-    const steps = room.scenario?.steps || [];
     let updated = false;
     const newSnapshots = { ...snapshots };
 
     // 過去のステップでスナップショットがないものをキャプチャ（リロード時のフォールバック）
     for (let i = 0; i < currentStep; i++) {
       if (newSnapshots[i]) continue;
-
-      const snap = buildSnapshot();
-      // フィールド値
-      const showFields = steps[i]?.display?.showFields;
-      if (showFields && showFields.length > 0 && playerData.fields) {
-        snap.fieldValues = {};
-        showFields.forEach((fid) => {
-          if (playerData.fields[fid] !== undefined) {
-            snap.fieldValues![fid] = playerData.fields[fid];
-          }
-        });
-      }
-      newSnapshots[i] = snap;
+      newSnapshots[i] = buildSnapshot();
       updated = true;
     }
 
@@ -180,23 +167,12 @@ export function EntryForm({ roomId }: { roomId: string }) {
     const prev = prevStepRef.current;
 
     if (currentStep > prev) {
-      const steps = room.scenario?.steps || [];
       const newSnapshots = { ...snapshots };
       let updated = false;
 
       // prev..currentStep-1 のステップをキャプチャ（飛ばしがあっても対応）
       for (let i = prev; i < currentStep; i++) {
-        const snap = buildSnapshot();
-        const showFields = steps[i]?.display?.showFields;
-        if (showFields && showFields.length > 0 && playerData.fields) {
-          snap.fieldValues = {};
-          showFields.forEach((fid) => {
-            if (playerData.fields[fid] !== undefined) {
-              snap.fieldValues![fid] = playerData.fields[fid];
-            }
-          });
-        }
-        newSnapshots[i] = snap; // 上書きして最新状態で凍結
+        newSnapshots[i] = buildSnapshot();
         updated = true;
       }
 
@@ -395,7 +371,8 @@ export function EntryForm({ roomId }: { roomId: string }) {
                     );
                   }
                   // 過去ステップ: 保存済みゲーム結果を表示
-                  const pastResult = room.gameResults?.[String(idx)];
+                  const pastResult = room.gameResults?.[String(idx)]
+                    ?? (room.gameResults as unknown as import("@/types/room").GameResult[])?.[idx];
                   if (!isCurrent && pastResult) {
                     return (
                       <div className="relative pl-6 pb-2 -mt-4" style={{ animationDelay: "0.15s" }}>
@@ -411,19 +388,23 @@ export function EntryForm({ roomId }: { roomId: string }) {
                   return null;
                 })()}
                 {/* 汎用回答開示（revealタイプ） */}
-                {step.type === "reveal" && step.reveal && (
+                {step.type === "reveal" && (
                   <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
                     <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
                     <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
-                      <RevealDisplay
-                        room={room}
-                        sourceStepIndex={step.reveal.sourceStepIndex}
-                        displayType={step.reveal.displayType}
-                        scope={step.reveal.scope}
-                        playerId={playerId}
-                        playerTableNumber={publishedTableNumber}
-                        allPlayers={allPlayers}
-                      />
+                      {step.reveal ? (
+                        <RevealDisplay
+                          room={room}
+                          sourceStepIndex={step.reveal.sourceStepIndex}
+                          displayType={step.reveal.displayType}
+                          scope={step.reveal.scope}
+                          playerId={playerId}
+                          playerTableNumber={publishedTableNumber}
+                          allPlayers={allPlayers}
+                        />
+                      ) : (
+                        <p className="text-sm text-gray-500">回答開示の設定がありません</p>
+                      )}
                     </div>
                   </div>
                 )}

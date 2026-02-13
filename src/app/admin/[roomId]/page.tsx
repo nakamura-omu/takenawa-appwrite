@@ -350,7 +350,7 @@ export default function AdminRoomPage() {
           </div>
 
           {/* 右: 参加者モニター & テーブル割り当て */}
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-3 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
             <PlayersPanel
               room={room}
               players={players}
@@ -374,7 +374,7 @@ export default function AdminRoomPage() {
               players={players}
             />
           </div>
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-4 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
             <PlayersPanel
               room={room}
               players={players}

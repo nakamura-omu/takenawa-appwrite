@@ -1,9 +1,10 @@
 "use client";
 
-import { Room, ScenarioStep, StepType, GameType, GameQuestion, RevealConfig, RevealDisplayType } from "@/types/room";
-import { getDefaultMessage, INSERTABLE_STEP_TYPES } from "./scenarioUtils";
+import { Room, ScenarioStep, StepType, GameType, GameQuestion, RevealConfig, RevealDisplayType, AnswerRevealScope } from "@/types/room";
+import { INSERTABLE_STEP_TYPES } from "./scenarioUtils";
 import EntryFieldsEditor from "./EntryFieldsEditor";
 import { pickRandomQuestions } from "@/lib/questionBank";
+import GameQuestionEditor from "./GameQuestionEditor";
 
 export interface StepEditFormProps {
   roomId: string;
@@ -61,7 +62,25 @@ export default function StepEditForm({
                 updates.survey = { question: "", options: [] };
               }
               if (newType === "reveal") {
-                updates.reveal = { sourceStepIndex: 0, displayType: "list" };
+                // 直前のゲーム/アンケートステップを自動参照
+                const steps = room.scenario?.steps || [];
+                const myIdx = stepIndex ?? steps.length;
+                let defaultSource = 0;
+                let defaultDisplay: RevealDisplayType = "list";
+                for (let i = myIdx - 1; i >= 0; i--) {
+                  const t = steps[i]?.type;
+                  if (t === "table_game" || t === "whole_game") {
+                    defaultSource = i;
+                    defaultDisplay = "scoreboard";
+                    break;
+                  }
+                  if (t === "survey" || t === "survey_open") {
+                    defaultSource = i;
+                    defaultDisplay = "bar_chart";
+                    break;
+                  }
+                }
+                updates.reveal = { sourceStepIndex: defaultSource, displayType: defaultDisplay };
               }
               if (newType !== "reveal") {
                 updates.reveal = undefined;
@@ -88,6 +107,20 @@ export default function StepEditForm({
           onChange={(e) => updateDraft({ durationMinutes: Number(e.target.value) || undefined })}
           placeholder="例: 15"
           className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+        />
+      </div>
+
+      {/* アナウンスメッセージ */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">アナウンスメッセージ</label>
+        <textarea
+          value={draft.display?.message || ""}
+          onChange={(e) => updateDraft({
+            display: { ...draft.display, message: e.target.value || undefined }
+          })}
+          placeholder="例: チューニングガムの時間です！"
+          rows={2}
+          className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 resize-none"
         />
       </div>
 
@@ -171,6 +204,15 @@ export default function StepEditForm({
                   >
                     プリセット5問追加
                   </button>
+                </div>
+              )}
+              {/* テーブル自動進行の案内 */}
+              {draft.type === "table_game" && (draft.config?.questions || []).filter(q => q?.text?.trim()).length > 0 && (
+                <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
+                  <p className="text-xs text-cyan-400">
+                    お題が設定済みのテーブルゲームでは、ゲーム開始時に「テーブル自動進行」を選択できます。
+                    各テーブルの全員が回答すると自動で次の問題へ進みます。
+                  </p>
                 </div>
               )}
             </div>
@@ -276,54 +318,23 @@ export default function StepEditForm({
               <option value="scoreboard">スコアボード</option>
             </select>
           </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">回答範囲</label>
+            <select
+              value={draft.reveal?.scope?.type || "all"}
+              onChange={(e) => {
+                const scopeType = e.target.value as "all" | "table";
+                const scope: AnswerRevealScope = scopeType === "table" ? { type: "table" } : { type: "all" };
+                updateDraft({ reveal: { ...draft.reveal!, scope } });
+              }}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="all">全体</option>
+              <option value="table">同じテーブル</option>
+            </select>
+          </div>
         </div>
       )}
-
-      {/* 参加者表示設定 */}
-      <div className="border-t border-gray-700 pt-2 space-y-2">
-        <p className="text-xs text-gray-400 font-semibold">参加者への表示</p>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">メッセージ（{"{tableNumber}"} {"{name}"} で置換可）</label>
-          <textarea
-            value={draft.display?.message || ""}
-            onChange={(e) => updateDraft({ display: { ...draft.display, message: e.target.value || undefined } })}
-            placeholder={`未設定時: ${getDefaultMessage(draft)}`}
-            rows={2}
-            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 resize-none"
-          />
-        </div>
-        <label className="flex items-center gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={draft.display?.showTablemates || false}
-            onChange={(e) => updateDraft({ display: { ...draft.display, showTablemates: e.target.checked } })}
-          />
-          テーブルメイトを表示
-        </label>
-        {(room.config.entryFields || []).filter((f) => f.id !== "name").length > 0 && (
-          <div>
-            <p className="text-xs text-gray-500 mb-1">表示フィールド</p>
-            <div className="flex flex-wrap gap-2">
-              {(room.config.entryFields || []).filter((f) => f.id !== "name").map((field) => (
-                <label key={field.id} className="flex items-center gap-1 text-xs text-gray-400">
-                  <input
-                    type="checkbox"
-                    checked={(draft.display?.showFields || []).includes(field.id)}
-                    onChange={(e) => {
-                      const current = draft.display?.showFields || [];
-                      const next = e.target.checked
-                        ? [...current, field.id]
-                        : current.filter((id) => id !== field.id);
-                      updateDraft({ display: { ...draft.display, showFields: next.length > 0 ? next : undefined } });
-                    }}
-                  />
-                  {field.label}
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* 保存/取消 */}
       <div className="flex gap-2 pt-2">
@@ -341,69 +352,6 @@ export default function StepEditForm({
           取消
         </button>
       </div>
-    </div>
-  );
-}
-
-// ========== お題エディター ==========
-
-interface GameQuestionEditorProps {
-  index: number;
-  question: GameQuestion;
-  onUpdate: (updated: GameQuestion) => void;
-  onRemove: () => void;
-}
-
-function GameQuestionEditor({ index, question, onUpdate, onRemove }: GameQuestionEditorProps) {
-  return (
-    <div className="bg-gray-800 p-2 rounded border border-gray-700">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-xs text-gray-500">お題 {index + 1}</span>
-        <button
-          onClick={onRemove}
-          className="ml-auto text-xs text-red-400 hover:text-red-300 transition"
-        >
-          削除
-        </button>
-      </div>
-      <input
-        type="text"
-        value={question.text}
-        onChange={(e) => onUpdate({ ...question, text: e.target.value })}
-        placeholder="お題を入力..."
-        className="w-full px-2 py-1 mb-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-      />
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-gray-500">回答方法:</label>
-        <select
-          value={question.inputType}
-          onChange={(e) => {
-            const inputType = e.target.value as "text" | "number" | "select";
-            onUpdate({
-              ...question,
-              inputType,
-              options: inputType === "select" ? (question.options || ["", ""]) : undefined,
-            });
-          }}
-          className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
-        >
-          <option value="text">テキスト</option>
-          <option value="number">数値</option>
-          <option value="select">選択肢</option>
-        </select>
-      </div>
-      {question.inputType === "select" && (
-        <div className="mt-2">
-          <label className="block text-xs text-gray-500 mb-1">選択肢（1行に1つ）</label>
-          <textarea
-            value={(question.options || []).join("\n")}
-            onChange={(e) => onUpdate({ ...question, options: e.target.value.split("\n") })}
-            placeholder={"選択肢1\n選択肢2"}
-            rows={2}
-            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500 resize-none"
-          />
-        </div>
-      )}
     </div>
   );
 }

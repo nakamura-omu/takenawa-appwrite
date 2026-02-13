@@ -15,11 +15,11 @@ interface ScoreBoardProps {
 export function ScoreBoard({ scores, players, myPlayerId, celebrate }: ScoreBoardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [displayScores, setDisplayScores] = useState<Record<string, number>>({});
-  const hasAnimated = useRef(false);
+  const hasPlayedEntry = useRef(false);
 
-  // Sort by score descending
+  // Sort by score descending (players が null なら全員表示)
   const ranked = Object.entries(scores || {})
-    .filter(([pid]) => players?.[pid])
+    .filter(([pid]) => !players || players[pid])
     .sort((a, b) => b[1] - a[1])
     .map(([pid, score], idx) => {
       return { pid, score, rank: idx + 1 };
@@ -34,65 +34,72 @@ export function ScoreBoard({ scores, players, myPlayerId, celebrate }: ScoreBoar
     }
   }
 
+  // スコアの内容が変わったら再アニメーションするためのキー
+  const scoreKey = ranked.map(r => `${r.pid}:${r.score}`).join(",");
+
   useEffect(() => {
-    if (!containerRef.current || hasAnimated.current || ranked.length === 0) return;
-    hasAnimated.current = true;
+    if (!containerRef.current || ranked.length === 0) return;
 
     // Initialize display scores to 0
     const initial: Record<string, number> = {};
     ranked.forEach(({ pid }) => { initial[pid] = 0; });
     setDisplayScores(initial);
 
-    // Confetti celebration
-    if (celebrate) {
-      const fire = (opts: confetti.Options) =>
-        confetti({ ...opts, disableForReducedMotion: true });
-      fire({ particleCount: 80, angle: 60, spread: 55, origin: { x: 0, y: 0.7 } });
-      fire({ particleCount: 80, angle: 120, spread: 55, origin: { x: 1, y: 0.7 } });
-      setTimeout(() => {
-        fire({ particleCount: 50, angle: 90, spread: 100, origin: { x: 0.5, y: 0.5 } });
-      }, 400);
-      setTimeout(() => {
-        fire({ particleCount: 30, angle: 60, spread: 60, origin: { x: 0.2, y: 0.6 } });
-        fire({ particleCount: 30, angle: 120, spread: 60, origin: { x: 0.8, y: 0.6 } });
-      }, 800);
-    }
+    // 登場アニメーション・紙吹雪は初回のみ
+    if (!hasPlayedEntry.current) {
+      hasPlayedEntry.current = true;
 
-    if (celebrate) {
-      // Final mode: top 3 podium drops in big, then rest slides in
-      const podiums = containerRef.current.querySelectorAll(".podium-card");
-      const rows = containerRef.current.querySelectorAll(".score-row");
-      gsap.from(podiums, {
-        opacity: 0,
-        scale: 0.3,
-        y: -30,
-        duration: 0.6,
-        stagger: 0.15,
-        ease: "back.out(1.4)",
-      });
-      if (rows.length > 0) {
+      // Confetti celebration
+      if (celebrate) {
+        const fire = (opts: confetti.Options) =>
+          confetti({ ...opts, disableForReducedMotion: true });
+        fire({ particleCount: 80, angle: 60, spread: 55, origin: { x: 0, y: 0.7 } });
+        fire({ particleCount: 80, angle: 120, spread: 55, origin: { x: 1, y: 0.7 } });
+        setTimeout(() => {
+          fire({ particleCount: 50, angle: 90, spread: 100, origin: { x: 0.5, y: 0.5 } });
+        }, 400);
+        setTimeout(() => {
+          fire({ particleCount: 30, angle: 60, spread: 60, origin: { x: 0.2, y: 0.6 } });
+          fire({ particleCount: 30, angle: 120, spread: 60, origin: { x: 0.8, y: 0.6 } });
+        }, 800);
+      }
+
+      if (celebrate) {
+        // Final mode: top 3 podium drops in big, then rest slides in
+        const podiums = containerRef.current.querySelectorAll(".podium-card");
+        const rows = containerRef.current.querySelectorAll(".score-row");
+        gsap.from(podiums, {
+          opacity: 0,
+          scale: 0.3,
+          y: -30,
+          duration: 0.6,
+          stagger: 0.15,
+          ease: "back.out(1.4)",
+        });
+        if (rows.length > 0) {
+          gsap.from(rows, {
+            opacity: 0,
+            x: -20,
+            duration: 0.4,
+            stagger: 0.06,
+            delay: 0.5,
+            ease: "power2.out",
+          });
+        }
+      } else {
+        // Compact mode: simple slide in
+        const rows = containerRef.current.querySelectorAll(".score-row");
         gsap.from(rows, {
           opacity: 0,
           x: -20,
           duration: 0.4,
-          stagger: 0.06,
-          delay: 0.5,
+          stagger: 0.08,
           ease: "power2.out",
         });
       }
-    } else {
-      // Compact mode: simple slide in
-      const rows = containerRef.current.querySelectorAll(".score-row");
-      gsap.from(rows, {
-        opacity: 0,
-        x: -20,
-        duration: 0.4,
-        stagger: 0.08,
-        ease: "power2.out",
-      });
     }
 
-    // Count up scores
+    // Count up scores（スコアが変わるたびに再実行）
     ranked.forEach(({ pid, score }) => {
       const obj = { val: 0 };
       gsap.to(obj, {
@@ -105,7 +112,8 @@ export function ScoreBoard({ scores, players, myPlayerId, celebrate }: ScoreBoar
         },
       });
     });
-  }, [ranked.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoreKey]);
 
   if (ranked.length === 0) {
     return <p className="text-sm text-gray-500">スコアデータがありません</p>;

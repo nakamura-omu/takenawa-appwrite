@@ -5,7 +5,6 @@ export type StepType =
   | "table_game"
   | "whole_game"
   | "break"
-  | "result"
   | "end"
   | "survey"         // アンケート集計（選択肢→結果表示）
   | "survey_open"    // アンケート回答依頼（フリーテキスト収集）
@@ -160,15 +159,21 @@ export interface PlayerScore {
 }
 
 // カードめくりゲーム用ステート
+export interface StreamsCardItem {
+  number: number;
+  color: string;     // "red" | "blue" | "white" | "green"
+}
+
 export interface StreamsCard {
-  number: number;     // めくった数字
-  points: number;     // ランダム得点 (5-25)
+  number: number;     // めくった数字（meta_streams用 / krukkurin: items[0].number）
+  points: number;     // ランダム得点（meta_streams用 / krukkurin: 0）
+  items?: StreamsCardItem[];  // くるっくりん用: 2アイテム（number + color）
   flippedAt: number;  // めくった時刻
 }
 
 export interface PlayerBoard {
-  rows: (number | null)[][];  // 行ごとのマス（null=空）
-  lastRow?: number;           // 前回配置した行（くるっくりん用）
+  rows: number[][];  // 行ごとのマス（0=空、1以上=配置済みカード番号）
+  colors?: string[][];        // くるっくりん用: セルの色（"" = 空）
   passCount: number;
   eliminated: boolean;
   completed: boolean;
@@ -280,6 +285,5 @@ export const DEFAULT_SCENARIO_STEPS: ScenarioStep[] = [
   { type: "table_game", label: "いい線行きましょう", gameType: "good_line", durationMinutes: 15 },
   { type: "break", label: "歓談タイム", durationMinutes: 10 },
   { type: "whole_game", label: "みんなのイーブン", gameType: "evens", durationMinutes: 15 },
-  { type: "result", label: "結果発表", durationMinutes: 5 },
   { type: "end", label: "閉会" },
 ];
