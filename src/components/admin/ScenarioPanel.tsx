@@ -6,6 +6,7 @@ import {
   goToNextStep,
   goToPrevStep,
   shuffleTables,
+  halfShuffleTables,
   updateScenario,
   insertStepAfterCurrent,
 } from "@/lib/room";
@@ -228,10 +229,16 @@ export default function ScenarioPanel({
     setScenarioDraft([...scenarioDraft, { type: "break", label: "" }]);
   };
 
-  // テーブルシャッフル
+  // 完全席シャッフル
   const handleShuffleTables = async () => {
-    if (!confirm("テーブル割り当て済みの参加者をランダムに再配分しますか？")) return;
+    if (!confirm("全員をランダムに再配分しますか？（全員席を立つ必要があります）")) return;
     await shuffleTables(roomId);
+  };
+
+  // 半数シャッフル
+  const handleHalfShuffleTables = async () => {
+    if (!confirm("各テーブルの約半数を抜き出して別テーブルへ移動させますか？")) return;
+    await halfShuffleTables(roomId);
   };
 
   // 割り込みステップ挿入
@@ -458,7 +465,14 @@ export default function ScenarioPanel({
                 disabled={!players || Object.values(players).filter((p) => p.tableNumber > 0).length === 0}
                 className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm transition"
               >
-                テーブルシャッフル
+                完全席シャッフル
+              </button>
+              <button
+                onClick={handleHalfShuffleTables}
+                disabled={!players || Object.values(players).filter((p) => p.tableNumber > 0).length === 0 || (room.config.tableCount || 1) < 2}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm transition"
+              >
+                半数シャッフル
               </button>
             </div>
           </div>

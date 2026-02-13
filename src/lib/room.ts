@@ -783,28 +783,100 @@ export async function publishTables(roomId: string): Promise<void> {
   });
 }
 
-// テーブルシャッフル（割り当て済み参加者をランダムに再配分）
+// Fisher-Yatesシャッフル（配列をインプレースでシャッフル）
+function shuffleArray<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// 完全席シャッフル（全員をランダムに再配分）
 export async function shuffleTables(roomId: string): Promise<void> {
   const room = await getRoom(roomId);
   if (!room || !room.players) return;
 
   const tableCount = room.config.tableCount || 1;
-  // 割り当て済み（tableNumber > 0）の参加者IDを収集
   const assignedIds = Object.entries(room.players)
     .filter(([, p]) => p.tableNumber > 0)
     .map(([id]) => id);
 
-  // Fisher-Yatesシャッフル
-  for (let i = assignedIds.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [assignedIds[i], assignedIds[j]] = [assignedIds[j], assignedIds[i]];
-  }
+  shuffleArray(assignedIds);
 
-  // ラウンドロビンでテーブルに振り分け
   const updates: Record<string, number> = {};
   assignedIds.forEach((id, idx) => {
     updates[`players/${id}/tableNumber`] = (idx % tableCount) + 1;
   });
+
+  if (Object.keys(updates).length > 0) {
+    const roomRef = ref(getDb(), `rooms/${roomId}`);
+    await update(roomRef, updates);
+  }
+}
+
+// 半数シャッフル（各テーブルから約半数を抜き出し、別テーブルへ再配分）
+export async function halfShuffleTables(roomId: string): Promise<void> {
+  const room = await getRoom(roomId);
+  if (!room || !room.players) return;
+
+  const tableCount = room.config.tableCount || 1;
+  if (tableCount < 2) return; // テーブル1つでは意味がない
+
+  // テーブルごとにプレイヤーを分類
+  const byTable: Record<number, string[]> = {};
+  for (let t = 1; t <= tableCount; t++) byTable[t] = [];
+  Object.entries(room.players).forEach(([id, p]) => {
+    if (p.tableNumber > 0 && byTable[p.tableNumber]) {
+      byTable[p.tableNumber].push(id);
+    }
+  });
+
+  // 各テーブルから半数（切り捨て）をランダムに抜き出す
+  const movers: string[] = [];
+  const stayers: Record<number, string[]> = {};
+  for (let t = 1; t <= tableCount; t++) {
+    const members = shuffleArray([...byTable[t]]);
+    const moveCount = Math.floor(members.length / 2);
+    movers.push(...members.slice(0, moveCount));
+    stayers[t] = members.slice(moveCount);
+  }
+
+  // 移動者をシャッフルして、元のテーブル以外に配分
+  shuffleArray(movers);
+
+  // 各テーブルの空き枠を計算（均等配分を目指す）
+  const totalPlayers = Object.values(byTable).reduce((s, arr) => s + arr.length, 0);
+  const targetPerTable = Math.ceil(totalPlayers / tableCount);
+
+  const updates: Record<string, number> = {};
+
+  // 移動者を空きの多いテーブルから順に埋める（元テーブルを避ける）
+  const originalTable: Record<string, number> = {};
+  Object.entries(room.players).forEach(([id, p]) => {
+    if (p.tableNumber > 0) originalTable[id] = p.tableNumber;
+  });
+
+  const currentCounts: Record<number, number> = {};
+  for (let t = 1; t <= tableCount; t++) currentCounts[t] = stayers[t].length;
+
+  for (const id of movers) {
+    // 空きが最も多いテーブルを選ぶ（元テーブルは最後の手段）
+    const candidates = Array.from({ length: tableCount }, (_, i) => i + 1)
+      .filter((t) => t !== originalTable[id] && currentCounts[t] < targetPerTable);
+
+    let dest: number;
+    if (candidates.length > 0) {
+      dest = candidates.reduce((a, b) => currentCounts[a] <= currentCounts[b] ? a : b);
+    } else {
+      // 全テーブル満杯 or 元テーブルしかない場合、一番空いてるところへ
+      dest = Array.from({ length: tableCount }, (_, i) => i + 1)
+        .reduce((a, b) => currentCounts[a] <= currentCounts[b] ? a : b);
+    }
+
+    updates[`players/${id}/tableNumber`] = dest;
+    currentCounts[dest]++;
+  }
 
   if (Object.keys(updates).length > 0) {
     const roomRef = ref(getDb(), `rooms/${roomId}`);
