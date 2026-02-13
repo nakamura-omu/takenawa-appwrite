@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "TAKENAWA",
-  description: "幹事進行型の宴会ゲームアプリ",
+  description: "宴会進行補助サービス",
 };
 
 export default function RootLayout({

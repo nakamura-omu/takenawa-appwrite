@@ -71,11 +71,11 @@ export function PlayerTimeline({
           const p = allPlayers[pid];
           if (!p) return null;
           const extras = headerFields
-            .map((f) => p.fields?.[f.id])
-            .filter(Boolean);
+            .map((f) => ({ label: f.label, value: p.fields?.[f.id] }))
+            .filter((e) => e.value);
           return { name: p.name, extras };
         })
-        .filter(Boolean) as { name: string; extras: (string | number)[] }[]
+        .filter(Boolean) as { name: string; extras: { label: string; value: string | number }[] }[]
     : [];
 
   return (
@@ -109,7 +109,9 @@ export function PlayerTimeline({
                   <div key={i} className="flex items-center gap-2 px-1 py-0.5">
                     <span className="text-xs text-white font-bold">{mate.name}</span>
                     {mate.extras.length > 0 && (
-                      <span className="text-xs text-white">{mate.extras.join(" / ")}</span>
+                      <span className="text-xs text-gray-400">
+                        {mate.extras.map((e) => `${e.label}：${e.value}`).join(" / ")}
+                      </span>
                     )}
                   </div>
                 ))}

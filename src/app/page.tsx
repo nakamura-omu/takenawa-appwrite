@@ -73,7 +73,7 @@ function HomeContent() {
       {/* ヒーロー */}
       <div className="text-center mb-12">
         <h1 className="text-4xl font-bold mb-2">Takenawa</h1>
-        <p className="text-gray-400">幹事進行型の宴会ゲームアプリ</p>
+        <p className="text-gray-400">宴会進行補助サービス</p>
       </div>
 
       <div className="w-full max-w-md space-y-8">

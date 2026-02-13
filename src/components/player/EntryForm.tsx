@@ -229,7 +229,8 @@ export function EntryForm({ roomId }: { roomId: string }) {
       setPlayerId(id);
     } catch (error) {
       console.error("エントリーエラー:", error);
-      alert("送信に失敗しました。もう一度お試しください。");
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`送信に失敗しました: ${msg}`);
     } finally {
       setSubmitting(false);
     }
