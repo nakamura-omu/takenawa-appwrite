@@ -1,6 +1,6 @@
 "use client";
 
-import { Room, Player, StepResponse, GameResult, RevealDisplayType, AnswerRevealScope, GameType } from "@/types/room";
+import { Room, Player, StepResponse, GameResult, RevealDisplayType, AnswerRevealScope, GameType, EntryField } from "@/types/room";
 import { calculateTotalScores } from "@/lib/scoring";
 import { PieChart } from "./PieChart";
 import { ScoreBoard } from "./ScoreBoard";
@@ -13,6 +13,8 @@ interface RevealDisplayProps {
   playerId: string;
   playerTableNumber: number;
   allPlayers: Record<string, Player> | null;
+  revealStepIndex?: number;
+  entryFields?: EntryField[];
 }
 
 const CHART_COLORS = [
@@ -28,8 +30,21 @@ export function RevealDisplay({
   playerId,
   playerTableNumber,
   allPlayers,
+  revealStepIndex,
+  entryFields,
 }: RevealDisplayProps) {
   const displayType = rawDisplayType || "list"; // フォールバック
+
+  // showInHeader フィールド（名前以外）
+  const headerFields = (entryFields || []).filter((f) => f.id !== "name" && f.showInHeader);
+
+  // プレイヤー名 + headerFields のサブテキストを返すヘルパー
+  const playerExtra = (pid: string): string | null => {
+    if (headerFields.length === 0) return null;
+    const p = allPlayers?.[pid];
+    if (!p) return null;
+    return headerFields.map((f) => `${f.label}：${p.fields?.[f.id] ?? ""}`).join(" / ");
+  };
 
   const sourceStep = room.scenario?.steps?.[sourceStepIndex];
   if (!sourceStep) return <p className="text-sm text-gray-500">参照先ステップが見つかりません</p>;
@@ -112,17 +127,23 @@ export function RevealDisplay({
       return (
         <div className="space-y-1.5">
           <h4 className="text-xs font-semibold text-gray-400 mb-2">回答一覧</h4>
-          {entries.map(([pid, resp]) => (
-            <div
-              key={pid}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded ${
-                pid === playerId ? "bg-purple-900/30 border border-purple-700/50" : "bg-gray-800/50"
-              }`}
-            >
-              <span className="text-xs text-gray-500 w-20 shrink-0 truncate">{resp.playerName}</span>
-              <span className="text-sm text-white">{String(resp.value)}</span>
-            </div>
-          ))}
+          {entries.map(([pid, resp]) => {
+            const extra = playerExtra(pid);
+            return (
+              <div
+                key={pid}
+                className={`flex items-start gap-2 px-3 py-1.5 rounded ${
+                  pid === playerId ? "bg-purple-900/30 border border-purple-700/50" : "bg-gray-800/50"
+                }`}
+              >
+                <span className="text-xs text-gray-500 w-20 shrink-0 truncate pt-0.5">
+                  {resp.playerName}
+                  {extra && <span className="block text-[10px] text-gray-600">{extra}</span>}
+                </span>
+                <span className="text-sm text-white whitespace-pre-wrap">{String(resp.value)}</span>
+              </div>
+            );
+          })}
         </div>
       );
     }
@@ -143,15 +164,19 @@ export function RevealDisplay({
       return (
         <div className="space-y-1.5">
           <h4 className="text-xs font-semibold text-gray-400 mb-2">回答一覧</h4>
-          {allEntries.map((e, i) => (
-            <div key={i} className={`px-3 py-1.5 rounded ${
-              e.pid === playerId ? "bg-purple-900/30" : "bg-gray-800/50"
-            }`}>
-              <span className="text-xs text-gray-500">{e.name}</span>
-              <span className="text-sm text-white ml-2">{e.text}</span>
-              <span className="text-xs text-gray-600 ml-1">({e.qText})</span>
-            </div>
-          ))}
+          {allEntries.map((e, i) => {
+            const extra = playerExtra(e.pid);
+            return (
+              <div key={i} className={`px-3 py-1.5 rounded ${
+                e.pid === playerId ? "bg-purple-900/30" : "bg-gray-800/50"
+              }`}>
+                <span className="text-xs text-gray-500">{e.name}</span>
+                {extra && <span className="text-[10px] text-gray-600 ml-1">{extra}</span>}
+                <span className="text-sm text-white ml-2">{e.text}</span>
+                <span className="text-xs text-gray-600 ml-1">({e.qText})</span>
+              </div>
+            );
+          })}
         </div>
       );
     }
@@ -207,6 +232,108 @@ export function RevealDisplay({
         <PieChart data={pieData} />
       </div>
     );
+  }
+
+  // === PER QUESTION ===
+  if (displayType === "per_question") {
+    // revealStepIndex（このrevealステップ自体のインデックス）で可視状態を取得
+    const visKey = revealStepIndex !== undefined ? String(revealStepIndex) : undefined;
+    const visMap = visKey ? (room.revealVisibility?.[visKey] || {}) : {};
+
+    // --- ゲームデータ ---
+    if (isGame && gameResult) {
+      const visibleQuestions = Object.entries(gameResult.questions).filter(
+        ([qId]) => visMap[qId] === true,
+      );
+
+      if (visibleQuestions.length === 0) {
+        return <p className="text-sm text-gray-500">まだ開示されているお題はありません</p>;
+      }
+
+      const assignments = room.publishedTables?.assignments || {};
+
+      return (
+        <div className="space-y-4">
+          {visibleQuestions.map(([qId, q]) => {
+            const qAnswers = gameResult.answers?.[qId] || {};
+            let answerEntries = Object.entries(qAnswers);
+
+            if (scope?.type === "table") {
+              answerEntries = answerEntries.filter(([pid]) => assignments[pid] === playerTableNumber);
+            } else if (scope?.type === "players") {
+              answerEntries = answerEntries.filter(([pid]) => scope.playerIds.includes(pid) || pid === playerId);
+            }
+
+            const scores = gameResult.scores || {};
+
+            return (
+              <div key={qId} className="space-y-1.5">
+                <h4 className="text-sm font-semibold text-purple-300">{q.text}</h4>
+                {answerEntries.map(([pid, ans]) => {
+                  const playerName = allPlayers?.[pid]?.name || pid.slice(0, 6);
+                  const extra = playerExtra(pid);
+                  const score = scores[pid];
+                  return (
+                    <div
+                      key={pid}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded ${
+                        pid === playerId ? "bg-purple-900/30 border border-purple-700/50" : "bg-gray-800/50"
+                      }`}
+                    >
+                      <span className="text-xs text-gray-500 w-20 shrink-0 truncate">
+                        {playerName}
+                        {extra && <span className="block text-[10px] text-gray-600">{extra}</span>}
+                      </span>
+                      <span className="text-sm text-white flex-1">{ans.text}</span>
+                      {score !== undefined && (
+                        <span className="text-xs text-yellow-400 shrink-0">{score}pt</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // --- アンケート（survey_open / survey）データ ---
+    if (isSurvey && surveyResponses) {
+      // visMap のキーは playerId
+      const visibleEntries = filterByScope(Object.entries(surveyResponses)).filter(
+        ([pid]) => visMap[pid] === true,
+      );
+
+      if (visibleEntries.length === 0) {
+        return <p className="text-sm text-gray-500">まだ開示されている回答はありません</p>;
+      }
+
+      return (
+        <div className="space-y-1.5">
+          <h4 className="text-xs font-semibold text-gray-400 mb-2">回答開示</h4>
+          {visibleEntries.map(([pid, resp]) => {
+            const extra = playerExtra(pid);
+            return (
+              <div
+                key={pid}
+                className={`flex items-start gap-2 px-3 py-1.5 rounded ${
+                  pid === playerId ? "bg-purple-900/30 border border-purple-700/50" : "bg-gray-800/50"
+                }`}
+              >
+                <span className="text-xs text-gray-500 w-20 shrink-0 truncate pt-0.5">
+                  {resp.playerName}
+                  {extra && <span className="block text-[10px] text-gray-600">{extra}</span>}
+                </span>
+                <span className="text-sm text-white whitespace-pre-wrap">{String(resp.value)}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    return <p className="text-sm text-gray-500">データがありません</p>;
   }
 
   return null;

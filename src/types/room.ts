@@ -54,7 +54,7 @@ export interface SurveyConfig {
 }
 
 // 汎用回答開示設定
-export type RevealDisplayType = "list" | "bar_chart" | "pie_chart" | "scoreboard";
+export type RevealDisplayType = "list" | "bar_chart" | "pie_chart" | "scoreboard" | "per_question";
 
 export interface RevealConfig {
   sourceStepIndex: number;
@@ -269,6 +269,7 @@ export interface Room {
   gameResults?: Record<string, GameResult>;  // stepIndex -> ゲーム結果
   stepResponses?: Record<string, Record<string, StepResponse>>;  // stepIndex -> playerId -> response
   stepReveals?: Record<string, StepInputReveal>;                  // stepIndex -> reveal config
+  revealVisibility?: Record<string, Record<string, boolean>>;     // stepIndex -> questionId -> visible
   publishedTables?: {
     assignments: Record<string, number>;  // playerId -> tableNumber
     pushedAt: number;

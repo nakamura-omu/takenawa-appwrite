@@ -302,6 +302,8 @@ export default function PlayerPreviewPanel({
                               playerId={activePlayerId}
                               playerTableNumber={publishedTableNumber}
                               allPlayers={players}
+                              revealStepIndex={idx}
+                              entryFields={entryFields}
                             />
                           ) : (
                             <p className="text-sm text-gray-500">回答開示の設定がありません</p>

@@ -1,6 +1,7 @@
 "use client";
 
-import { Room, Player, ScenarioStep } from "@/types/room";
+import { Room, Player, ScenarioStep, GameResult } from "@/types/room";
+import { setRevealQuestionVisibility } from "@/lib/room";
 import EntryFieldsEditor from "./EntryFieldsEditor";
 
 export interface StepDetailViewProps {
@@ -179,7 +180,47 @@ export default function StepDetailView({
             </p>
           </div>
         );
-      case "reveal":
+      case "reveal": {
+        // per_question モード用のデータ取得
+        const sourceIdx = step.reveal?.sourceStepIndex;
+        const sourceStepDef = sourceIdx !== undefined ? room.scenario?.steps?.[sourceIdx] : undefined;
+        const isSourceGame = sourceStepDef?.type === "table_game" || sourceStepDef?.type === "whole_game";
+        const isSourceSurvey = sourceStepDef?.type === "survey_open" || sourceStepDef?.type === "survey";
+
+        const rawGameResults = room.gameResults;
+        let revealGameResult: GameResult | undefined;
+        if (rawGameResults && sourceIdx !== undefined) {
+          revealGameResult =
+            rawGameResults[String(sourceIdx)]
+            ?? (rawGameResults as unknown as GameResult[])?.[sourceIdx];
+          if (revealGameResult && typeof revealGameResult !== "object") revealGameResult = undefined;
+        }
+
+        // survey_open / survey の回答データ
+        const surveyResponses = sourceIdx !== undefined
+          ? (room.stepResponses?.[String(sourceIdx)] ?? room.stepResponses?.[sourceIdx as unknown as string])
+          : undefined;
+
+        const visibilityMap = room.revealVisibility?.[String(stepIndex)] || {};
+
+        // per_question 用のトグルアイテムリスト（ゲーム: questionId→text / アンケート: playerId→回答）
+        type ToggleItem = { key: string; label: string; detail?: string };
+        const toggleItems: ToggleItem[] = [];
+        if (step.reveal?.displayType === "per_question") {
+          if (isSourceGame && revealGameResult?.questions) {
+            Object.entries(revealGameResult.questions).forEach(([qId, q]) => {
+              const cnt = revealGameResult!.answers?.[qId] ? Object.keys(revealGameResult!.answers[qId]).length : 0;
+              toggleItems.push({ key: qId, label: q.text, detail: `${cnt}件` });
+            });
+          } else if (isSourceSurvey && surveyResponses && typeof surveyResponses === "object") {
+            Object.entries(surveyResponses)
+              .sort((a, b) => a[1].submittedAt - b[1].submittedAt)
+              .forEach(([pid, r]) => {
+                toggleItems.push({ key: pid, label: r.playerName, detail: String(r.value) });
+              });
+          }
+        }
+
         return (
           <div>
             <h4 className="text-xs font-semibold text-gray-400 mb-1">回答開示</h4>
@@ -187,8 +228,8 @@ export default function StepDetailView({
               <div className="text-sm space-y-1">
                 <p className="text-gray-400">
                   参照: <span className="text-white">Step {step.reveal.sourceStepIndex + 1}
-                    {room.scenario?.steps?.[step.reveal.sourceStepIndex] && (
-                      <span className="text-gray-500 ml-1">({room.scenario.steps[step.reveal.sourceStepIndex].label})</span>
+                    {sourceStepDef && (
+                      <span className="text-gray-500 ml-1">({sourceStepDef.label})</span>
                     )}
                   </span>
                 </p>
@@ -197,7 +238,8 @@ export default function StepDetailView({
                     step.reveal.displayType === "list" ? "一覧"
                     : step.reveal.displayType === "bar_chart" ? "棒グラフ"
                     : step.reveal.displayType === "pie_chart" ? "円グラフ"
-                    : step.reveal.displayType === "scoreboard" ? "スコアボード"
+                    : step.reveal.displayType === "scoreboard" ? "スコアボード（ゲーム用）"
+                    : step.reveal.displayType === "per_question" ? "個別お題開示"
                     : step.reveal.displayType
                   }</span>
                 </p>
@@ -208,12 +250,70 @@ export default function StepDetailView({
                     : "特定プレイヤー"
                   }</span>
                 </p>
+                {/* per_question モード: 個別トグル */}
+                {step.reveal.displayType === "per_question" && toggleItems.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          for (const item of toggleItems) {
+                            await setRevealQuestionVisibility(roomId, stepIndex, item.key, true);
+                          }
+                        }}
+                        className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs font-semibold transition"
+                      >
+                        全表示
+                      </button>
+                      <button
+                        onClick={async () => {
+                          for (const item of toggleItems) {
+                            await setRevealQuestionVisibility(roomId, stepIndex, item.key, false);
+                          }
+                        }}
+                        className="px-2 py-1 bg-gray-600 hover:bg-gray-500 rounded text-xs font-semibold transition"
+                      >
+                        全非表示
+                      </button>
+                    </div>
+                    {toggleItems.map((item) => {
+                      const isVisible = visibilityMap[item.key] === true;
+                      return (
+                        <div
+                          key={item.key}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded border ${
+                            isVisible
+                              ? "bg-green-900/20 border-green-700/50"
+                              : "bg-gray-800/50 border-gray-700"
+                          }`}
+                        >
+                          <button
+                            onClick={() => setRevealQuestionVisibility(roomId, stepIndex, item.key, !isVisible)}
+                            className={`shrink-0 w-8 h-5 rounded-full relative transition-colors ${
+                              isVisible ? "bg-green-600" : "bg-gray-600"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                                isVisible ? "left-3.5" : "left-0.5"
+                              }`}
+                            />
+                          </button>
+                          <span className="text-xs text-gray-200 flex-1 truncate">{item.label}</span>
+                          {item.detail && (
+                            <span className="text-xs text-gray-500 shrink-0 max-w-[120px] truncate">{item.detail}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-xs text-gray-500">未設定</p>
             )}
           </div>
         );
+      }
       case "participants":
         return (
           <div>

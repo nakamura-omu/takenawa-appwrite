@@ -402,6 +402,8 @@ export function EntryForm({ roomId }: { roomId: string }) {
                           playerId={playerId}
                           playerTableNumber={publishedTableNumber}
                           allPlayers={allPlayers}
+                          revealStepIndex={idx}
+                          entryFields={entryFields}
                         />
                       ) : (
                         <p className="text-sm text-gray-500">回答開示の設定がありません</p>

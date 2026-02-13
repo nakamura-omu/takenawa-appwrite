@@ -721,6 +721,19 @@ export async function resetStepAll(
   });
 }
 
+// ========== 回答開示の個別表示制御 ==========
+
+// 個別お題の可視性を設定
+export async function setRevealQuestionVisibility(
+  roomId: string,
+  stepIndex: number,
+  questionId: string,
+  visible: boolean,
+): Promise<void> {
+  const visRef = ref(getDb(), `rooms/${roomId}/revealVisibility/${stepIndex}/${questionId}`);
+  await set(visRef, visible);
+}
+
 // ========== ステップ割り込み ==========
 
 // 割り込みステップ挿入（currentStep+1に挿入し、オプションで自動進行）
