@@ -3,7 +3,7 @@ import { GameType } from "@/types/room";
 export const GAME_RULES: Record<GameType, { title: string; rules: string }> = {
   tuning_gum: {
     title: "チューニングガム",
-    rules: "テーブルごとに行うゲームです。\n「〇流の〇〇は？」というお題に答えて、同じテーブルの方との一致を目指しましょう！\n同じ回答の人がいると得点です。ポイントは自分がどう思ってるかより、相手にチューニングすること...がんばって！",
+    rules: "「〇流の〇〇は？」というお題に答えて、同じテーブルの方との一致を目指しましょう！\n同じ回答の人がいると得点です。ポイントは自分がどう思ってるかより、相手にチューニングすること...がんばって！",
   },
   good_line: {
     title: "いい線行きましょう",
@@ -11,7 +11,7 @@ export const GAME_RULES: Record<GameType, { title: string; rules: string }> = {
   },
   evens: {
     title: "みんなのイーブン",
-    rules: "Yes / No / Even の3択で答えるゲームです。\n回答が偏っていたら多数派の勝ち（1pt）、バランスが良ければEvenを選んだ人の勝ち（3pt）！\nみんなの空気を読んで回答しよう！",
+    rules: "Yes / No / Even の3択で答えるゲームです。\n回答が偏っていたら多数派の勝ち（1pt）、バランスが良ければEvenを選んだ人の勝ち（1pt）！\nみんなの空気を読んで回答しよう！",
   },
   krukkurin: {
     title: "くるっくりん",

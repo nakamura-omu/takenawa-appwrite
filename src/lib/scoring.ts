@@ -137,9 +137,9 @@ export function calculateEvensScores(
   );
 
   if (isBalanced) {
-    // Even answers get 3 points
+    // Even answers get 1 point
     playerChoices.forEach(({ pid, choice }) => {
-      scores[pid] = choice === "Even" ? 3 : 0;
+      scores[pid] = choice === "Even" ? 1 : 0;
     });
   } else {
     // Majority gets 1 point
