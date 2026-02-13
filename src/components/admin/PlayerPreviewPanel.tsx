@@ -318,6 +318,8 @@ export default function PlayerPreviewPanel({
                             publishedAssignments={publishedAssignments}
                             allPlayers={players}
                             playerId={activePlayerId}
+                            entryFields={entryFields}
+                            tableCount={room.config.tableCount}
                           />
                         </div>
                       </div>

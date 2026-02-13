@@ -8,7 +8,7 @@ import {
   shuffleTables,
   halfShuffleTables,
   updateScenario,
-  insertStepAfterCurrent,
+  getRoom,
 } from "@/lib/room";
 import MessageSender from "./MessageSender";
 import GameControls from "./GameControls";
@@ -121,77 +121,8 @@ export default function ScenarioPanel({
       return cleaned;
     };
 
-    // アンケート・ゲームステップの結果ステップを自動生成
-    // ドラフトindex → processedSteps index のマッピング（reveal参照先のリマップ用）
-    const processedSteps: ScenarioStep[] = [];
-    const indexMap = new Map<number, number>();
-
-    scenarioDraft.forEach((step, draftIdx) => {
-      const next = scenarioDraft[draftIdx + 1];
-
-      if (step.type === "survey" && step.survey) {
-        indexMap.set(draftIdx, processedSteps.length);
-        const questionStep: ScenarioStep = {
-          ...cleanStep(step),
-          survey: {
-            ...step.survey,
-            resultStepIndex: processedSteps.length + 1,
-          },
-        };
-        processedSteps.push(questionStep);
-
-        // 次ステップが既にこのアンケートのrevealなら追加しない
-        const alreadyHasResult = next?.type === "reveal"
-          && next.reveal?.displayType === "bar_chart";
-        if (!alreadyHasResult) {
-          processedSteps.push({
-            type: "reveal",
-            label: `${step.label}（結果）`,
-            reveal: { sourceStepIndex: processedSteps.length - 1, displayType: "bar_chart" },
-          });
-        }
-      } else if (step.type === "survey_open" && step.survey) {
-        indexMap.set(draftIdx, processedSteps.length);
-        processedSteps.push(cleanStep(step));
-
-        const alreadyHasResult = next?.type === "reveal"
-          && next.reveal?.displayType === "list";
-        if (!alreadyHasResult) {
-          processedSteps.push({
-            type: "reveal",
-            label: `${step.label}（結果）`,
-            reveal: { sourceStepIndex: processedSteps.length - 1, displayType: "list" },
-          });
-        }
-      } else if (step.type === "table_game" || step.type === "whole_game") {
-        indexMap.set(draftIdx, processedSteps.length);
-        processedSteps.push(cleanStep(step));
-
-        const alreadyHasResult = next?.type === "reveal"
-          && next.reveal?.displayType === "scoreboard";
-        if (!alreadyHasResult) {
-          processedSteps.push({
-            type: "reveal",
-            label: `${step.label}（結果発表）`,
-            reveal: { sourceStepIndex: processedSteps.length - 1, displayType: "scoreboard" },
-          });
-        }
-      } else if (step.type === "survey_result") {
-        // レガシー結果ステップはスキップ
-      } else {
-        indexMap.set(draftIdx, processedSteps.length);
-        const cleaned = cleanStep(step);
-        // 既存revealのsourceStepIndexをリマップ
-        if (cleaned.type === "reveal" && cleaned.reveal) {
-          const newIdx = indexMap.get(cleaned.reveal.sourceStepIndex);
-          if (newIdx !== undefined) {
-            cleaned.reveal = { ...cleaned.reveal, sourceStepIndex: newIdx };
-          }
-        }
-        processedSteps.push(cleaned);
-      }
-    });
-
+    // ドラフトをそのまま保存（自動生成はしない。割り込み挿入時のみ自動生成）
+    const processedSteps = scenarioDraft.map((step) => cleanStep(step));
     await updateScenario(roomId, processedSteps);
     setScenarioMode(false);
   };
@@ -241,10 +172,40 @@ export default function ScenarioPanel({
     await halfShuffleTables(roomId);
   };
 
-  // 割り込みステップ挿入
+  // 割り込みステップ挿入（アンケート・ゲーム系は結果ステップも自動追加）
   const handleInsertInterrupt = async () => {
     if (!interruptDraft.label.trim()) return;
-    await insertStepAfterCurrent(roomId, interruptDraft, false);
+    const room2 = await getRoom(roomId);
+    if (!room2?.scenario) return;
+    const currentStep = room2.state.currentStep;
+    const steps2 = [...room2.scenario.steps];
+    const insertIdx = currentStep + 1;
+
+    // メインステップを挿入
+    steps2.splice(insertIdx, 0, interruptDraft);
+
+    // 結果ステップを自動追加
+    if (interruptDraft.type === "survey" && interruptDraft.survey) {
+      steps2.splice(insertIdx + 1, 0, {
+        type: "reveal",
+        label: `${interruptDraft.label}（結果）`,
+        reveal: { sourceStepIndex: insertIdx, displayType: "bar_chart" },
+      });
+    } else if (interruptDraft.type === "survey_open" && interruptDraft.survey) {
+      steps2.splice(insertIdx + 1, 0, {
+        type: "reveal",
+        label: `${interruptDraft.label}（結果）`,
+        reveal: { sourceStepIndex: insertIdx, displayType: "list" },
+      });
+    } else if (interruptDraft.type === "table_game" || interruptDraft.type === "whole_game") {
+      steps2.splice(insertIdx + 1, 0, {
+        type: "reveal",
+        label: `${interruptDraft.label}（結果発表）`,
+        reveal: { sourceStepIndex: insertIdx, displayType: "scoreboard" },
+      });
+    }
+
+    await updateScenario(roomId, steps2);
     setShowInterrupt(false);
     setInterruptDraft({ type: "break", label: "" });
   };

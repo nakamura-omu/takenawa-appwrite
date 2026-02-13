@@ -157,6 +157,8 @@ export function PlayerTimeline({
                       publishedAssignments={publishedAssignments}
                       allPlayers={allPlayers}
                       playerId={playerId}
+                      entryFields={entryFields}
+                      tableCount={room.config.tableCount}
                     />
                   </div>
                 </div>

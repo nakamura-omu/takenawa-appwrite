@@ -89,7 +89,7 @@ export function SurveyInput({
       <p className="text-sm font-medium text-gray-300 mb-3">{question}</p>
 
       {allowMultiple && (
-        <p className="text-xs text-gray-500 mb-2">複数選択可</p>
+        <p className="text-xs text-purple-400 mb-2">※ 複数選択できます</p>
       )}
 
       <div className="space-y-2 mb-4">
