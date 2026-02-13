@@ -8,7 +8,7 @@ import {
   shuffleTables,
   halfShuffleTables,
   updateScenario,
-  getRoom,
+  insertStepAfterCurrent,
 } from "@/lib/room";
 import MessageSender from "./MessageSender";
 import GameControls from "./GameControls";
@@ -172,40 +172,10 @@ export default function ScenarioPanel({
     await halfShuffleTables(roomId);
   };
 
-  // 割り込みステップ挿入（アンケート・ゲーム系は結果ステップも自動追加）
+  // 割り込みステップ挿入
   const handleInsertInterrupt = async () => {
     if (!interruptDraft.label.trim()) return;
-    const room2 = await getRoom(roomId);
-    if (!room2?.scenario) return;
-    const currentStep = room2.state.currentStep;
-    const steps2 = [...room2.scenario.steps];
-    const insertIdx = currentStep + 1;
-
-    // メインステップを挿入
-    steps2.splice(insertIdx, 0, interruptDraft);
-
-    // 結果ステップを自動追加
-    if (interruptDraft.type === "survey" && interruptDraft.survey) {
-      steps2.splice(insertIdx + 1, 0, {
-        type: "reveal",
-        label: `${interruptDraft.label}（結果）`,
-        reveal: { sourceStepIndex: insertIdx, displayType: "bar_chart" },
-      });
-    } else if (interruptDraft.type === "survey_open" && interruptDraft.survey) {
-      steps2.splice(insertIdx + 1, 0, {
-        type: "reveal",
-        label: `${interruptDraft.label}（結果）`,
-        reveal: { sourceStepIndex: insertIdx, displayType: "list" },
-      });
-    } else if (interruptDraft.type === "table_game" || interruptDraft.type === "whole_game") {
-      steps2.splice(insertIdx + 1, 0, {
-        type: "reveal",
-        label: `${interruptDraft.label}（結果発表）`,
-        reveal: { sourceStepIndex: insertIdx, displayType: "scoreboard" },
-      });
-    }
-
-    await updateScenario(roomId, steps2);
+    await insertStepAfterCurrent(roomId, interruptDraft, false);
     setShowInterrupt(false);
     setInterruptDraft({ type: "break", label: "" });
   };

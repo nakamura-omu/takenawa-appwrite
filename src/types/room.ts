@@ -105,6 +105,7 @@ export interface RoomConfig {
   adminName?: string;   // 管理者名（メッセージ送信者名として表示）
   creatorUid?: string;  // Anonymous Auth UID（マイルーム復元用）
   entryFields: EntryField[];  // 参加者入力フィールド定義
+  showRosterToUnassigned?: boolean;  // テーブル未割当者にも参加者一覧を表示するか
 }
 
 // ルーム状態

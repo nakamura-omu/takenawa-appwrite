@@ -560,6 +560,12 @@ export async function updateEntryFields(roomId: string, fields: EntryField[]): P
   await set(fieldsRef, fields);
 }
 
+// ルーム設定の個別フィールドを更新
+export async function updateRoomConfigField(roomId: string, field: string, value: unknown): Promise<void> {
+  const fieldRef = ref(getDb(), `rooms/${roomId}/config/${field}`);
+  await set(fieldRef, value);
+}
+
 // 参加者のテーブル番号を更新
 export async function updatePlayerTable(roomId: string, playerId: string, tableNumber: number): Promise<void> {
   const tableRef = ref(getDb(), `rooms/${roomId}/players/${playerId}/tableNumber`);

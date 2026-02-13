@@ -6,17 +6,19 @@ export function ParticipantsRoster({
   playerId,
   entryFields,
   tableCount,
+  showToUnassigned,
 }: {
   publishedAssignments: Record<string, number>;
   allPlayers: Record<string, Player> | null;
   playerId: string;
   entryFields?: EntryField[];
   tableCount?: number;
+  showToUnassigned?: boolean;
 }) {
   if (!allPlayers) return null;
 
   const myTable = publishedAssignments[playerId] ?? 0;
-  if (myTable <= 0) return null;
+  if (myTable <= 0 && !showToUnassigned) return null;
 
   // showInHeader のフィールド（名前以外）
   const headerFields = (entryFields || []).filter((f) => f.id !== "name" && f.showInHeader);

@@ -320,6 +320,7 @@ export default function PlayerPreviewPanel({
                             playerId={activePlayerId}
                             entryFields={entryFields}
                             tableCount={room.config.tableCount}
+                            showToUnassigned={room.config.showRosterToUnassigned}
                           />
                         </div>
                       </div>

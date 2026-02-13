@@ -9,6 +9,30 @@ type TimelineItem =
   | { kind: "step"; index: number; step: ScenarioStep }
   | { kind: "message"; message: AdminMessage };
 
+// 過去ステップの時点での publishedAssignments を復元
+// publishHistory から、次のステップ開始時刻より前の最新プッシュを取得
+function getAssignmentsAtStep(room: Room, stepIndex: number): Record<string, number> | null {
+  // 次のステップの開始時刻を取得（なければ現在時刻）
+  const nextStepKey = `s${stepIndex + 1}`;
+  const nextStepTimestamp = room.state.stepTimestamps?.[nextStepKey]
+    ?? room.state.stepTimestamps?.[String(stepIndex + 1)];
+  const deadline = nextStepTimestamp ?? Date.now();
+
+  // publishHistory から deadline 以前の最新プッシュを探す
+  if (room.publishHistory) {
+    let latest: { pushedAt: number; assignments: Record<string, number> } | null = null;
+    Object.values(room.publishHistory).forEach((entry) => {
+      if (entry.pushedAt <= deadline && (!latest || entry.pushedAt > latest.pushedAt)) {
+        latest = entry;
+      }
+    });
+    if (latest) return (latest as { assignments: Record<string, number> }).assignments;
+  }
+
+  // publishHistory がなければ現在の publishedTables にフォールバック
+  return room.publishedTables?.assignments ?? null;
+}
+
 // タイムライン描画（参加者画面とプレビューの共通部分）
 export function PlayerTimeline({
   room,
@@ -149,20 +173,28 @@ export function PlayerTimeline({
                 timestamp={room.state.stepTimestamps?.[`s${idx}`] ?? room.state.stepTimestamps?.[String(idx)]}
               />
               {/* 参加者一覧ステップ */}
-              {item.step.type === "participants" && publishedAssignments && (
-                <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
-                  <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
-                  <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
-                    <ParticipantsRoster
-                      publishedAssignments={publishedAssignments}
-                      allPlayers={allPlayers}
-                      playerId={playerId}
-                      entryFields={entryFields}
-                      tableCount={room.config.tableCount}
-                    />
+              {item.step.type === "participants" && (() => {
+                // 過去ステップ: そのステップ終了時点の割り当てを復元
+                const stepAssignments = isCurrent
+                  ? publishedAssignments
+                  : getAssignmentsAtStep(room, idx);
+                if (!stepAssignments) return null;
+                return (
+                  <div className="relative pl-6 pb-2 -mt-4 animate-panel-in" style={{ animationDelay: "0.15s" }}>
+                    <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-gray-700" />
+                    <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+                      <ParticipantsRoster
+                        publishedAssignments={stepAssignments}
+                        allPlayers={allPlayers}
+                        playerId={playerId}
+                        entryFields={entryFields}
+                        tableCount={room.config.tableCount}
+                        showToUnassigned={room.config.showRosterToUnassigned}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
               {/* 各ステップの追加コンテンツ（子から注入） */}
               {children?.({ step: item.step, index: idx, isCurrent })}
             </div>

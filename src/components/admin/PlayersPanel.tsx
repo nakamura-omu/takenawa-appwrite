@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Room, Player, EntryField } from "@/types/room";
-import { updateEntryFields } from "@/lib/room";
+import { updateEntryFields, updateRoomConfigField } from "@/lib/room";
 
 export interface PlayersPanelProps {
   room: Room;
@@ -78,11 +78,11 @@ export default function PlayersPanel({
         </div>
       )}
 
-      {/* 卓表示設定（showInHeader トグル） */}
-      {entryFields.filter((f) => f.id !== "name").length > 0 && (
-        <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
-          <p className="text-xs text-white font-bold mb-2">卓表示設定</p>
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
+      {/* 卓表示設定 */}
+      <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
+        <p className="text-xs text-white font-bold mb-2">卓表示設定</p>
+        {entryFields.filter((f) => f.id !== "name").length > 0 && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2">
             {entryFields.map((field, i) => {
               if (field.id === "name") return null;
               return (
@@ -102,8 +102,18 @@ export default function PlayersPanel({
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+        <label className="flex items-center gap-1.5 text-xs text-white">
+          <input
+            type="checkbox"
+            checked={room.config.showRosterToUnassigned || false}
+            onChange={async (e) => {
+              await updateRoomConfigField(roomId, "showRosterToUnassigned", e.target.checked || null);
+            }}
+          />
+          テーブル未割当者にも参加者一覧を表示
+        </label>
+      </div>
 
       {!players || Object.keys(players).length === 0 ? (
         <p className="text-gray-500 text-sm">参加者待ち...</p>
