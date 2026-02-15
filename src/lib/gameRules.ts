@@ -11,7 +11,7 @@ export const GAME_RULES: Record<GameType, { title: string; rules: string }> = {
   },
   evens: {
     title: "みんなのイーブン",
-    rules: "Yes / No / Even の3択で答えるゲームです。\n回答が偏っていたら多数派の勝ち（1pt）、バランスが良ければEvenを選んだ人の勝ち（1pt）！\nみんなの空気を読んで回答しよう！",
+    rules: "Yes / No / Even の3択で答えるゲームです。\n判定はEvenを除いた Yes と No の比率で決まります。\n・Yes:No が2倍以上偏っていたら → 多数派（YesかNo）を選んだ人に1pt\n・Yes:No が2倍未満で均衡していたら → Evenを選んだ人に1pt\nみんなの空気を読んで、多数派に乗るか、均衡を見抜いてEvenを狙うか…！",
   },
   krukkurin: {
     title: "くるっくりん",

@@ -287,8 +287,14 @@ export default function StepEditForm({
 
       {/* 回答開示設定 */}
       {draft.type === "reveal" && (() => {
-        const srcIdx = draft.reveal?.sourceStepIndex ?? 0;
-        const srcStep = room.scenario?.steps?.[srcIdx];
+        const steps = room.scenario?.steps || [];
+        const validSourceTypes = ["survey", "survey_open", "table_game", "whole_game"];
+        const rawSrcIdx = draft.reveal?.sourceStepIndex ?? 0;
+        // sourceStepIndex が有効なソース（ゲーム/アンケート）を指しているか確認、指していなければ最初の有効ステップにフォールバック
+        const srcIdx = validSourceTypes.includes(steps[rawSrcIdx]?.type)
+          ? rawSrcIdx
+          : steps.findIndex(s => validSourceTypes.includes(s.type));
+        const srcStep = srcIdx >= 0 ? steps[srcIdx] : undefined;
         const srcType = srcStep?.type;
         const isGame = srcType === "table_game" || srcType === "whole_game";
         const isSurveyChoice = srcType === "survey";

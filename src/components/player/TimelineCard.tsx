@@ -178,8 +178,9 @@ export function TimelineCard({
     ? (publishedTableNumber ?? player.tableNumber)
     : (snapshot?.tableNumber ?? player.tableNumber);
 
-  // テーブルが前のステップから変わったか
-  const tableChanged = prevSnapshot && prevSnapshot.tableNumber > 0 && tableNum > 0 && tableNum !== prevSnapshot.tableNumber;
+  // テーブルが前のステップから変わったか（変更 or 初回アサイン）
+  const tableChanged = prevSnapshot && tableNum > 0 && tableNum !== prevSnapshot.tableNumber;
+  const isFirstAssignment = tableChanged && (!prevSnapshot.tableNumber || prevSnapshot.tableNumber === 0);
 
   // ゲームルール
   const gameRule = step.gameType ? GAME_RULES[step.gameType] : null;
@@ -266,9 +267,18 @@ export function TimelineCard({
 
         {/* テーブル変更通知 */}
         {tableChanged && (
-          <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-2 mb-2 text-center">
-            <p className="text-xs text-yellow-400">テーブルが変わりました</p>
-            <p className="text-sm font-bold text-yellow-300">テーブル {prevSnapshot.tableNumber} → {tableNum}</p>
+          <div className={`${isFirstAssignment ? "bg-blue-900/30 border-blue-700" : "bg-yellow-900/30 border-yellow-700"} border rounded-lg p-2 mb-2 text-center`}>
+            {isFirstAssignment ? (
+              <>
+                <p className="text-xs text-blue-400">テーブルが決まりました</p>
+                <p className="text-sm font-bold text-blue-300">テーブル {tableNum}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-yellow-400">テーブルが変わりました</p>
+                <p className="text-sm font-bold text-yellow-300">テーブル {prevSnapshot!.tableNumber} → {tableNum}</p>
+              </>
+            )}
           </div>
         )}
 

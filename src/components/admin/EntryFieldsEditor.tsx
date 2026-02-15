@@ -118,7 +118,7 @@ export default function EntryFieldsEditor({
                     checked={field.showInHeader || false}
                     onChange={async (e) => {
                       const newFields = fields.map((f, j) =>
-                        j === i ? { ...f, showInHeader: e.target.checked || undefined } : f
+                        j === i ? { ...f, showInHeader: e.target.checked } : f
                       );
                       await updateEntryFields(roomId, newFields);
                     }}

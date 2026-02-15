@@ -91,7 +91,23 @@ export default function ScenarioEditMode({
                         updates.survey = { question: "", options: [] };
                       }
                       if (newType === "reveal") {
-                        updates.reveal = { sourceStepIndex: 0, displayType: "list" };
+                        // 直前のゲーム/アンケートステップを自動参照
+                        let defaultSource = 0;
+                        let defaultDisplay: RevealDisplayType = "list";
+                        for (let i = idx - 1; i >= 0; i--) {
+                          const t = scenarioDraft[i]?.type;
+                          if (t === "table_game" || t === "whole_game") {
+                            defaultSource = i;
+                            defaultDisplay = "scoreboard";
+                            break;
+                          }
+                          if (t === "survey" || t === "survey_open") {
+                            defaultSource = i;
+                            defaultDisplay = "bar_chart";
+                            break;
+                          }
+                        }
+                        updates.reveal = { sourceStepIndex: defaultSource, displayType: defaultDisplay };
                       }
                       if (newType !== "reveal") {
                         updates.reveal = undefined;
@@ -274,13 +290,44 @@ export default function ScenarioEditMode({
                 </div>
               )}
               {/* 回答開示設定 */}
-              {step.type === "reveal" && (
+              {step.type === "reveal" && (() => {
+                const validSourceTypes = ["survey", "survey_open", "table_game", "whole_game"];
+                const rawSrcIdx = step.reveal?.sourceStepIndex ?? 0;
+                const srcIdx = validSourceTypes.includes(scenarioDraft[rawSrcIdx]?.type)
+                  ? rawSrcIdx
+                  : scenarioDraft.findIndex(s => validSourceTypes.includes(s.type));
+                const srcStep = srcIdx >= 0 ? scenarioDraft[srcIdx] : undefined;
+                const srcType = srcStep?.type;
+                const isGame = srcType === "table_game" || srcType === "whole_game";
+                const isSurveyChoice = srcType === "survey";
+                const displayOptions: { value: RevealDisplayType; label: string }[] = [
+                  { value: "list", label: "一覧" },
+                  ...(isGame || isSurveyChoice ? [
+                    { value: "bar_chart" as RevealDisplayType, label: "棒グラフ" },
+                    { value: "pie_chart" as RevealDisplayType, label: "円グラフ" },
+                  ] : []),
+                  ...(isGame ? [
+                    { value: "scoreboard" as RevealDisplayType, label: "スコアボード" },
+                  ] : []),
+                  { value: "per_question" as RevealDisplayType, label: isGame ? "個別お題開示" : "個別回答開示" },
+                ];
+                return (
                 <div className="mt-2 space-y-2">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">参照ステップ</label>
                     <select
-                      value={step.reveal?.sourceStepIndex ?? 0}
-                      onChange={(e) => draftUpdate(idx, { reveal: { ...step.reveal!, sourceStepIndex: Number(e.target.value) } })}
+                      value={srcIdx}
+                      onChange={(e) => {
+                        const newIdx = Number(e.target.value);
+                        const newSrc = scenarioDraft[newIdx];
+                        const newIsGame = newSrc?.type === "table_game" || newSrc?.type === "whole_game";
+                        const newIsSurveyChoice = newSrc?.type === "survey";
+                        const cur = step.reveal?.displayType || "list";
+                        let newDisplay = cur;
+                        if (cur === "scoreboard" && !newIsGame) newDisplay = "list";
+                        if ((cur === "bar_chart" || cur === "pie_chart") && !newIsGame && !newIsSurveyChoice) newDisplay = "list";
+                        draftUpdate(idx, { reveal: { ...step.reveal!, sourceStepIndex: newIdx, displayType: newDisplay } });
+                      }}
                       className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
                       {scenarioDraft.map((s, i) => {
@@ -300,10 +347,9 @@ export default function ScenarioEditMode({
                       onChange={(e) => draftUpdate(idx, { reveal: { ...step.reveal!, displayType: e.target.value as RevealDisplayType } })}
                       className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
-                      <option value="list">一覧</option>
-                      <option value="bar_chart">棒グラフ</option>
-                      <option value="pie_chart">円グラフ</option>
-                      <option value="scoreboard">スコアボード</option>
+                      {displayOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -322,7 +368,8 @@ export default function ScenarioEditMode({
                     </select>
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
             {/* 挿入ボタン（各ステップの後） */}
             <button

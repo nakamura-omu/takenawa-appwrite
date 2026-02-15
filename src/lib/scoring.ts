@@ -44,8 +44,8 @@ export function calculateTuningGumScores(
     });
   });
 
-  // Players not in filtered get 0
-  Object.keys(answers).forEach((pid) => {
+  // Players in scope who didn't score get 0
+  Object.keys(filtered).forEach((pid) => {
     if (scores[pid] === undefined) scores[pid] = 0;
   });
 
@@ -99,8 +99,8 @@ export function calculateGoodLineScores(
     }
   });
 
-  // Players not in filtered get 0
-  Object.keys(answers).forEach((pid) => {
+  // Players in scope who didn't score get 0
+  Object.keys(filtered).forEach((pid) => {
     if (scores[pid] === undefined) scores[pid] = 0;
   });
 
@@ -149,8 +149,8 @@ export function calculateEvensScores(
     });
   }
 
-  // Players not in filtered get 0
-  Object.keys(answers).forEach((pid) => {
+  // Players in scope who didn't score get 0
+  Object.keys(filtered).forEach((pid) => {
     if (scores[pid] === undefined) scores[pid] = 0;
   });
 

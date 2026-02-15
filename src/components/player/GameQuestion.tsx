@@ -321,6 +321,14 @@ function QuestionCard({
     } else {
       if (!answerText.trim()) return;
       value = answerText.trim();
+      // 全角数字・記号を半角に変換（数値入力時）
+      if (inputType === "number") {
+        value = value
+          .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+          .replace(/[．。]/g, ".")
+          .replace(/[ー−‐―]/g, "-")
+          .replace(/[，、]/g, ",");
+      }
     }
 
     if (submitting || hasAnswered) return;
@@ -498,8 +506,158 @@ function QuestionCard({
           : visibleAnswers;
 
         const myDisplayAnswer = displayAnswers.find((a) => a.playerId === playerId);
-        const othersAnswers = displayAnswers.filter((a) => a.playerId !== playerId);
         const myScore = myDisplayAnswer ? (questionScores[playerId] || 0) : 0;
+
+        // いい線行きましょう: 全員を数値ソートして一覧表示（中央がわかるように）
+        const isGoodLine = gameType === "good_line";
+        if (isGoodLine) {
+          const sorted = [...displayAnswers].sort(
+            (a, b) => (parseFloat(a.text) || 0) - (parseFloat(b.text) || 0)
+          );
+          const midIndex = Math.floor((sorted.length - 1) / 2);
+          const midIndex2 = sorted.length % 2 === 0 ? midIndex + 1 : midIndex;
+
+          return (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-400">
+                {question.revealScope?.type === "table" || scope === "table"
+                  ? `テーブルの回答（${sorted.length}件）— 真ん中ほど高得点`
+                  : `みんなの回答（${sorted.length}件）— 真ん中ほど高得点`}
+              </p>
+              <div className="space-y-1">
+                {sorted.map((ans, idx) => {
+                  const isMe = ans.playerId === playerId;
+                  const playerScore = questionScores[ans.playerId] || 0;
+                  const playerName = anonymousMode ? "???" : (allPlayers?.[ans.playerId]?.name || "");
+                  const isMid = idx >= midIndex && idx <= midIndex2;
+                  return (
+                    <div
+                      key={ans.playerId}
+                      className={`game-answer-item p-2 rounded flex items-center justify-between ${
+                        isMe
+                          ? "bg-green-900/30 border border-green-700/40"
+                          : isMid
+                          ? "bg-yellow-900/20 border border-yellow-700/30"
+                          : "bg-gray-800"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500 w-5 text-right tabular-nums">{idx + 1}.</span>
+                        {!anonymousMode && playerName && (
+                          <span className={`text-xs ${isMe ? "text-green-400 font-semibold" : "text-gray-400"}`}>
+                            {isMe ? `${playerName}（あなた）` : playerName}
+                          </span>
+                        )}
+                        <span className={`text-sm font-bold tabular-nums ${isMe ? "text-green-300" : "text-white"}`}>
+                          {ans.text}
+                        </span>
+                        {isMid && <span className="text-[10px] text-yellow-400">★</span>}
+                      </div>
+                      {playerScore !== 0 && (
+                        <span className={`text-xs font-semibold shrink-0 ${playerScore > 0 ? "text-yellow-400" : "text-red-400"}`}>
+                          {playerScore > 0 ? `+${playerScore}` : playerScore}pt
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        }
+
+        // みんなのイーブン: 票数サマリー付き表示
+        const isEvens = gameType === "evens";
+        if (isEvens) {
+          const yesCount = displayAnswers.filter(a => a.text === "Yes").length;
+          const noCount = displayAnswers.filter(a => a.text === "No").length;
+          const evenCount = displayAnswers.filter(a => a.text === "Even").length;
+          const ratio = Math.max(yesCount, noCount) / Math.max(Math.min(yesCount, noCount), 1);
+          const isBalanced = (yesCount + noCount) > 0 && (
+            (yesCount === 0 && noCount === 0) || ratio < 2
+          );
+
+          return (
+            <div className="space-y-2">
+              {/* 票数サマリー */}
+              <div className="game-answer-item flex items-center justify-center gap-4 p-3 rounded-lg bg-gray-800/80 border border-gray-700/50">
+                <div className="text-center">
+                  <span className="block text-lg font-bold text-blue-400">{yesCount}</span>
+                  <span className="text-xs text-blue-400/70">Yes</span>
+                </div>
+                <div className="text-gray-600">:</div>
+                <div className="text-center">
+                  <span className="block text-lg font-bold text-red-400">{noCount}</span>
+                  <span className="text-xs text-red-400/70">No</span>
+                </div>
+                <div className="text-gray-600">:</div>
+                <div className="text-center">
+                  <span className="block text-lg font-bold text-yellow-400">{evenCount}</span>
+                  <span className="text-xs text-yellow-400/70">Even</span>
+                </div>
+              </div>
+              {/* 判定結果 */}
+              <div className={`game-answer-item text-center py-2 rounded-lg text-sm font-semibold ${
+                isBalanced
+                  ? "bg-yellow-900/20 border border-yellow-700/30 text-yellow-300"
+                  : "bg-blue-900/20 border border-blue-700/30 text-blue-300"
+              }`}>
+                {isBalanced
+                  ? `均衡！（${yesCount}:${noCount}）→ Even の勝ち！`
+                  : `偏り！（${yesCount}:${noCount}）→ ${yesCount > noCount ? "Yes" : "No"} の勝ち！`}
+              </div>
+              {/* あなたの回答 */}
+              {myDisplayAnswer && (
+                <div className="game-answer-item bg-green-900/20 border border-green-700/30 rounded p-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-green-400 mb-1">あなたの回答</p>
+                      <span className="text-sm text-white">{myDisplayAnswer.text}</span>
+                    </div>
+                    {myScore > 0 && (
+                      <span className="text-xs text-yellow-400 font-semibold shrink-0">+{myScore}pt</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* 他の回答 */}
+              {(() => {
+                const others = displayAnswers.filter(a => a.playerId !== playerId);
+                if (others.length === 0) return null;
+                return (
+                  <>
+                    <p className="text-xs text-gray-400">
+                      {question.revealScope?.type === "table" || scope === "table"
+                        ? `テーブルの回答（${displayAnswers.length}件）`
+                        : `みんなの回答（${displayAnswers.length}件）`}
+                    </p>
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {others.map((ans) => {
+                        const playerName = anonymousMode ? "???" : (allPlayers?.[ans.playerId]?.name || "");
+                        const choiceColor = ans.text === "Yes" ? "text-blue-400" : ans.text === "No" ? "text-red-400" : "text-yellow-400";
+                        return (
+                          <div key={ans.playerId} className="game-answer-item p-2 rounded bg-gray-800">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                {!anonymousMode && playerName && (
+                                  <span className="text-xs text-gray-500 mr-2">{playerName}</span>
+                                )}
+                                <span className={`text-sm font-semibold ${choiceColor}`}>{ans.text}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          );
+        }
+
+        // その他のゲーム: 自分の回答を上、他を下に表示
+        const othersAnswers = displayAnswers.filter((a) => a.playerId !== playerId);
 
         return (
           <div className="space-y-2">

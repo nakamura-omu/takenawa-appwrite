@@ -109,10 +109,24 @@ export function RevealDisplay({
         }
       }
       if (scores && Object.keys(scores).length > 0) {
+        // scope に応じてスコアをフィルタリング
+        let filteredScores = scores;
+        if (scope?.type === "table") {
+          const assignments = room.publishedTables?.assignments;
+          if (assignments) {
+            filteredScores = Object.fromEntries(
+              Object.entries(scores).filter(([pid]) => assignments[pid] === playerTableNumber)
+            );
+          }
+        } else if (scope?.type === "players") {
+          filteredScores = Object.fromEntries(
+            Object.entries(scores).filter(([pid]) => scope.playerIds.includes(pid) || pid === playerId)
+          );
+        }
         return (
           <div>
             <h4 className="text-xs font-semibold text-gray-400 mb-2">スコアボード</h4>
-            <ScoreBoard scores={scores} players={allPlayers} myPlayerId={playerId} />
+            <ScoreBoard scores={filteredScores} players={allPlayers} myPlayerId={playerId} />
           </div>
         );
       }

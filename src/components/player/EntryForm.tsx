@@ -139,6 +139,7 @@ export function EntryForm({ roomId }: { roomId: string }) {
   // - 過去のステップ（0..currentStep-1）: スナップショットがなければ現在データでキャプチャ（リロード対応）
   // - 現在のステップ: キャプチャしない（ライブデータを使う）
   // - ステップが進んだ瞬間: 直前のステップをキャプチャして凍結
+  // - テーブル情報が再プッシュされたら、tableNumber=0 のスナップショットを更新
   useEffect(() => {
     if (!room || !playerData || !playerId || !allPlayers) return;
 
@@ -153,11 +154,22 @@ export function EntryForm({ roomId }: { roomId: string }) {
       updated = true;
     }
 
+    // テーブル情報が再プッシュされた場合: tableNumber=0 のスナップショットを更新
+    // （遅参者が後からテーブルに割り当てられたケースに対応）
+    if (publishedTableNumber > 0) {
+      for (let i = 0; i < currentStep; i++) {
+        if (newSnapshots[i] && newSnapshots[i].tableNumber === 0) {
+          newSnapshots[i] = buildSnapshot();
+          updated = true;
+        }
+      }
+    }
+
     if (updated) {
       setSnapshots(newSnapshots);
       saveSnapshots(roomId, playerId, newSnapshots);
     }
-  }, [room?.state.currentStep, playerData, allPlayers, playerId, roomId, snapshots, buildSnapshot, room]);
+  }, [room?.state.currentStep, playerData, allPlayers, playerId, roomId, snapshots, buildSnapshot, room, publishedTableNumber]);
 
   // ステップ遷移検知: 前のステップを凍結キャプチャ
   useEffect(() => {
@@ -382,6 +394,8 @@ export function EntryForm({ roomId }: { roomId: string }) {
                           gameResult={pastResult}
                           playerId={playerId}
                           allPlayers={allPlayers}
+                          tableNumber={publishedTableNumber}
+                          publishedAssignments={publishedAssignments}
                         />
                       </div>
                     );
