@@ -108,7 +108,7 @@ export default function AdminRoomPage() {
     if (!confirm("本当にルームを削除しますか？")) return;
     await deleteRoom(roomId);
     sessionStorage.removeItem(`admin_${roomId}`);
-    window.location.href = "/";
+    window.location.href = "/takenawa";
   };
 
   // テーブル数保存
@@ -197,7 +197,7 @@ export default function AdminRoomPage() {
   // 参加者URL
   const participantUrl =
     typeof window !== "undefined"
-      ? `${window.location.origin}/?room=${roomId}`
+      ? `${window.location.origin}/takenawa?room=${roomId}`
       : "";
 
   // テーブルごとの参加者（IDも保持）

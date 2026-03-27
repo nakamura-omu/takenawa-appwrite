@@ -64,7 +64,7 @@ function HomeContent() {
   const handleJoinRoom = () => {
     const id = joinRoomId.trim().toUpperCase();
     if (id) {
-      router.push(`/?room=${id}`);
+      router.push(`/takenawa?room=${id}`);
     }
   };
 
