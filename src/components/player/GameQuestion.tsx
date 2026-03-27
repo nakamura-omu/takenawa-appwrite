@@ -4,10 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Room, Answer, Question, AnswerRevealScope, Player } from "@/types/room";
-import { ref, set } from "firebase/database";
-import { getDb } from "@/lib/firebase";
 import { calculateQuestionScores, calculateTotalScores } from "@/lib/scoring";
-import { checkAndAdvanceTable } from "@/lib/room";
+import { checkAndAdvanceTable, submitAnswer } from "@/lib/room";
 import { ScoreBoard } from "./ScoreBoard";
 
 gsap.registerPlugin(useGSAP);
@@ -20,21 +18,6 @@ interface GameQuestionProps {
   tableNumber: number;
   allPlayers?: Record<string, Player> | null;
   stepGameType?: import("@/types/room").GameType;
-}
-
-// 回答を送信（questionId対応）
-async function submitAnswer(
-  roomId: string,
-  questionId: string,
-  playerId: string,
-  text: string
-): Promise<void> {
-  const answerRef = ref(getDb(), `rooms/${roomId}/currentGame/answers/${questionId}/${playerId}`);
-  const answer: Answer = {
-    text,
-    submittedAt: Date.now(),
-  };
-  await set(answerRef, answer);
 }
 
 export function GameQuestion({

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getRoom, addPlayer, subscribeToPlayer, subscribeToRoom, subscribeToPlayers, subscribeToMessages, registerPresence } from "@/lib/room";
-import { ensureAnonymousUser } from "@/lib/firebase";
+import { ensureAnonymousUser } from "@/lib/appwrite";
 import { Room, Player, EntryField, TimelineSnapshot, AdminMessage } from "@/types/room";
 import { loadSnapshots, saveSnapshots } from "@/lib/timeline";
 import { SurveyInput } from "./SurveyInput";

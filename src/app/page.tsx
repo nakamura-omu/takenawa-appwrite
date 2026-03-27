@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createRoom, getRoomsByCreator } from "@/lib/room";
-import { ensureAnonymousUser } from "@/lib/firebase";
+import { ensureAnonymousUser } from "@/lib/appwrite";
 import { Room } from "@/types/room";
 import { EntryForm } from "@/components/player/EntryForm";
 

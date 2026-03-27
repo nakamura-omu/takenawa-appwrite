@@ -1,5 +1,5 @@
-import { ref, set, get, update, onValue, off, push, query, orderByChild, equalTo, onDisconnect } from "firebase/database";
-import { getDb } from "./firebase";
+import { getDatabases, getClient, DATABASE_ID, COLLECTION_ROOMS, COLLECTION_PLAYERS, COLLECTION_ANSWERS } from "./appwrite";
+import { ID, Query } from "appwrite";
 import {
   Room,
   RoomConfig,
@@ -25,95 +25,20 @@ import {
 } from "@/types/room";
 import { generateDeck, createEmptyBoard, createEmptyColors, KRUKKURIN_CARD_COLORS } from "./deckGenerator";
 
-// ルームIDの生成（英字2文字 + 数字5文字 = 7文字）
-export function generateRoomId(): string {
-  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // 紛らわしい文字を除外
-  const digits = "0123456789";
-  let result = "";
-  for (let i = 0; i < 2; i++) {
-    result += letters.charAt(Math.floor(Math.random() * letters.length));
-  }
-  for (let i = 0; i < 5; i++) {
-    result += digits.charAt(Math.floor(Math.random() * digits.length));
-  }
-  return result;
+// ===== ヘルパー =====
+
+function parseJson<T>(value: string | null | undefined): T | undefined {
+  if (!value || value === "") return undefined;
+  try { return JSON.parse(value); }
+  catch { return undefined; }
 }
 
-// ルーム作成
-export async function createRoom(
-  eventName: string,
-  eventDate: string,
-  adminPassword: string,
-  creatorUid?: string,
-): Promise<string> {
-  const roomId = generateRoomId();
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-
-  const initialRoom: Room = {
-    config: {
-      eventName,
-      eventDate,
-      tableCount: 6,
-      createdAt: Date.now(),
-      adminPassword,
-      creatorUid,
-      entryFields: [
-        { id: "name", label: "名前", type: "text", required: true },
-      ],
-    },
-    state: {
-      currentStep: 0,
-      phase: "waiting",
-      stepTimestamps: { "s0": Date.now() },
-    },
-    scenario: {
-      steps: DEFAULT_SCENARIO_STEPS,
-    },
-  };
-
-  await set(roomRef, initialRoom);
-  return roomId;
+function toJson(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  return JSON.stringify(stripUndefined(value));
 }
 
-// ルーム取得
-export async function getRoom(roomId: string): Promise<Room | null> {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  const snapshot = await get(roomRef);
-  return snapshot.exists() ? snapshot.val() : null;
-}
-
-// UIDでルーム一覧を取得（マイルーム）
-export async function getRoomsByCreator(uid: string): Promise<{ id: string; room: Room }[]> {
-  const roomsRef = ref(getDb(), "rooms");
-  const q = query(roomsRef, orderByChild("config/creatorUid"), equalTo(uid));
-  const snapshot = await get(q);
-  if (!snapshot.exists()) return [];
-  const results: { id: string; room: Room }[] = [];
-  snapshot.forEach((child) => {
-    results.push({ id: child.key!, room: child.val() });
-  });
-  return results.sort((a, b) => b.room.config.createdAt - a.room.config.createdAt);
-}
-
-// ルーム削除
-export async function deleteRoom(roomId: string): Promise<void> {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await set(roomRef, null);
-}
-
-// ルームの購読
-export function subscribeToRoom(
-  roomId: string,
-  callback: (room: Room | null) => void
-): () => void {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  const unsubscribe = onValue(roomRef, (snapshot) => {
-    callback(snapshot.exists() ? snapshot.val() : null);
-  });
-  return () => off(roomRef);
-}
-
-// undefinedを再帰的に除去（Firebase は undefined を受け付けない）
+// undefinedを再帰的に除去
 function stripUndefined<T>(obj: T): T {
   if (Array.isArray(obj)) {
     return obj.map(stripUndefined) as T;
@@ -128,13 +53,408 @@ function stripUndefined<T>(obj: T): T {
   return obj;
 }
 
-// 台本の更新
-export async function updateScenario(roomId: string, steps: ScenarioStep[]): Promise<void> {
-  const scenarioRef = ref(getDb(), `rooms/${roomId}/scenario/steps`);
-  await set(scenarioRef, stripUndefined(steps));
+// ドキュメント → Player 変換
+function docToPlayer(doc: Record<string, unknown>): Player {
+  return {
+    name: doc.name as string,
+    tableNumber: doc.tableNumber as number,
+    connected: doc.connected as boolean,
+    joinedAt: doc.joinedAt as number,
+    fields: parseJson<Record<string, string | number>>(doc.fields as string) || {},
+  };
 }
 
-// 台本ステップの追加
+// Room ドキュメント + players + answers → Room オブジェクト組み立て
+function assembleRoom(
+  doc: Record<string, unknown>,
+  players: Record<string, Player>,
+  answers: Record<string, Record<string, Answer>>,
+): Room {
+  const config = parseJson<RoomConfig>(doc.config as string)!;
+  if (doc.creatorUid) config.creatorUid = doc.creatorUid as string;
+
+  let currentGame = parseJson<CurrentGame>(doc.currentGame as string);
+  if (currentGame && Object.keys(answers).length > 0) {
+    currentGame = { ...currentGame, answers };
+  }
+
+  return {
+    config,
+    state: parseJson<RoomState>(doc.state as string)!,
+    scenario: parseJson(doc.scenario as string),
+    players: Object.keys(players).length > 0 ? players : undefined,
+    currentGame,
+    messages: parseJson(doc.messages as string),
+    gameResults: parseJson(doc.gameResults as string),
+    stepResponses: parseJson(doc.stepResponses as string),
+    stepReveals: parseJson(doc.stepReveals as string),
+    revealVisibility: parseJson(doc.revealVisibility as string),
+    publishedTables: parseJson(doc.publishedTables as string),
+    publishHistory: parseJson(doc.publishHistory as string),
+  };
+}
+
+// Room ドキュメントだけ取得（内部用）
+async function getRoomDoc(roomId: string): Promise<Record<string, unknown> | null> {
+  try {
+    return await getDatabases().getDocument(DATABASE_ID, COLLECTION_ROOMS, roomId) as unknown as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+// players をフェッチ
+async function fetchPlayers(roomId: string): Promise<Record<string, Player>> {
+  const players: Record<string, Player> = {};
+  try {
+    const res = await getDatabases().listDocuments(DATABASE_ID, COLLECTION_PLAYERS, [
+      Query.equal("roomId", roomId), Query.limit(500),
+    ]);
+    for (const doc of res.documents) {
+      players[doc.$id] = docToPlayer(doc as unknown as Record<string, unknown>);
+    }
+  } catch { /* empty */ }
+  return players;
+}
+
+// answers をフェッチ
+async function fetchAnswers(roomId: string): Promise<Record<string, Record<string, Answer>>> {
+  const answers: Record<string, Record<string, Answer>> = {};
+  try {
+    const res = await getDatabases().listDocuments(DATABASE_ID, COLLECTION_ANSWERS, [
+      Query.equal("roomId", roomId), Query.limit(5000),
+    ]);
+    for (const doc of res.documents) {
+      const d = doc as unknown as Record<string, unknown>;
+      const qId = d.questionId as string;
+      const pId = d.playerId as string;
+      if (!answers[qId]) answers[qId] = {};
+      answers[qId][pId] = { text: d.text as string, submittedAt: d.submittedAt as number };
+    }
+  } catch { /* empty */ }
+  return answers;
+}
+
+// 関連ドキュメント一括削除
+async function deleteAllInCollection(collectionId: string, roomId: string): Promise<void> {
+  const db = getDatabases();
+  let hasMore = true;
+  while (hasMore) {
+    const res = await db.listDocuments(DATABASE_ID, collectionId, [
+      Query.equal("roomId", roomId), Query.limit(100),
+    ]);
+    if (res.documents.length === 0) break;
+    await Promise.all(res.documents.map(d => db.deleteDocument(DATABASE_ID, collectionId, d.$id)));
+    if (res.documents.length < 100) hasMore = false;
+  }
+}
+
+// ===== ルームID生成 =====
+
+export function generateRoomId(): string {
+  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits = "0123456789";
+  let result = "";
+  for (let i = 0; i < 2; i++) {
+    result += letters.charAt(Math.floor(Math.random() * letters.length));
+  }
+  for (let i = 0; i < 5; i++) {
+    result += digits.charAt(Math.floor(Math.random() * digits.length));
+  }
+  return result;
+}
+
+// ===== CRUD =====
+
+export async function createRoom(
+  eventName: string,
+  eventDate: string,
+  adminPassword: string,
+  creatorUid?: string,
+): Promise<string> {
+  const roomId = generateRoomId();
+
+  const config: RoomConfig = {
+    eventName,
+    eventDate,
+    tableCount: 6,
+    createdAt: Date.now(),
+    adminPassword,
+    creatorUid,
+    entryFields: [
+      { id: "name", label: "名前", type: "text", required: true },
+    ],
+  };
+
+  const state: RoomState = {
+    currentStep: 0,
+    phase: "waiting",
+    stepTimestamps: { s0: Date.now() },
+  };
+
+  await getDatabases().createDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    creatorUid: creatorUid || "",
+    config: toJson(config),
+    state: toJson(state),
+    scenario: toJson({ steps: DEFAULT_SCENARIO_STEPS }),
+    currentGame: "",
+    messages: "",
+    gameResults: "",
+    stepResponses: "",
+    stepReveals: "",
+    revealVisibility: "",
+    publishedTables: "",
+    publishHistory: "",
+  });
+
+  return roomId;
+}
+
+export async function getRoom(roomId: string): Promise<Room | null> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return null;
+
+  const [players, answers] = await Promise.all([
+    fetchPlayers(roomId),
+    fetchAnswers(roomId),
+  ]);
+
+  return assembleRoom(doc, players, answers);
+}
+
+export async function getRoomsByCreator(uid: string): Promise<{ id: string; room: Room }[]> {
+  const db = getDatabases();
+  const res = await db.listDocuments(DATABASE_ID, COLLECTION_ROOMS, [
+    Query.equal("creatorUid", uid), Query.limit(100),
+  ]);
+
+  return res.documents
+    .map(doc => {
+      const d = doc as unknown as Record<string, unknown>;
+      const config = parseJson<RoomConfig>(d.config as string);
+      const state = parseJson<RoomState>(d.state as string);
+      if (!config || !state) return null;
+      if (d.creatorUid) config.creatorUid = d.creatorUid as string;
+      return { id: doc.$id, room: { config, state } as Room };
+    })
+    .filter((r): r is { id: string; room: Room } => r !== null)
+    .sort((a, b) => b.room.config.createdAt - a.room.config.createdAt);
+}
+
+export async function deleteRoom(roomId: string): Promise<void> {
+  await Promise.all([
+    getDatabases().deleteDocument(DATABASE_ID, COLLECTION_ROOMS, roomId).catch(() => {}),
+    deleteAllInCollection(COLLECTION_PLAYERS, roomId),
+    deleteAllInCollection(COLLECTION_ANSWERS, roomId),
+  ]);
+}
+
+// ===== リアルタイム購読 =====
+
+export function subscribeToRoom(
+  roomId: string,
+  callback: (room: Room | null) => void,
+): () => void {
+  const client = getClient();
+  const db = getDatabases();
+
+  let roomDoc: Record<string, unknown> | null = null;
+  let players: Record<string, Player> = {};
+  let answers: Record<string, Record<string, Answer>> = {};
+  let initialized = false;
+
+  function emit() {
+    if (!initialized) return;
+    if (!roomDoc) { callback(null); return; }
+    callback(assembleRoom(roomDoc, players, answers));
+  }
+
+  // ルームドキュメント購読
+  const unsub1 = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_ROOMS}.documents.${roomId}`,
+    (event) => {
+      if (event.events.some((e: string) => e.includes(".delete"))) {
+        roomDoc = null;
+      } else {
+        roomDoc = event.payload as unknown as Record<string, unknown>;
+      }
+      emit();
+    },
+  );
+
+  // プレイヤー購読
+  const unsub2 = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_PLAYERS}.documents`,
+    (event) => {
+      const doc = event.payload as unknown as Record<string, unknown>;
+      if (doc.roomId !== roomId) return;
+      const id = (doc as unknown as { $id: string }).$id;
+      if (event.events.some((e: string) => e.includes(".delete"))) {
+        delete players[id];
+      } else {
+        players[id] = docToPlayer(doc);
+      }
+      players = { ...players };
+      emit();
+    },
+  );
+
+  // 回答購読
+  const unsub3 = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_ANSWERS}.documents`,
+    (event) => {
+      const doc = event.payload as unknown as Record<string, unknown>;
+      if (doc.roomId !== roomId) return;
+      const qId = doc.questionId as string;
+      const pId = doc.playerId as string;
+      if (event.events.some((e: string) => e.includes(".delete"))) {
+        if (answers[qId]) {
+          delete answers[qId][pId];
+          if (Object.keys(answers[qId]).length === 0) delete answers[qId];
+        }
+      } else {
+        if (!answers[qId]) answers[qId] = {};
+        answers[qId][pId] = { text: doc.text as string, submittedAt: doc.submittedAt as number };
+      }
+      answers = { ...answers };
+      emit();
+    },
+  );
+
+  // 初回フェッチ
+  (async () => {
+    try {
+      roomDoc = await db.getDocument(DATABASE_ID, COLLECTION_ROOMS, roomId) as unknown as Record<string, unknown>;
+    } catch {
+      roomDoc = null;
+    }
+    const [p, a] = await Promise.all([fetchPlayers(roomId), fetchAnswers(roomId)]);
+    players = p;
+    answers = a;
+    initialized = true;
+    emit();
+  })();
+
+  return () => { unsub1(); unsub2(); unsub3(); };
+}
+
+// 参加者一覧の購読
+export function subscribeToPlayers(
+  roomId: string,
+  callback: (players: Record<string, Player> | null) => void,
+): () => void {
+  const client = getClient();
+  let players: Record<string, Player> = {};
+
+  const unsub = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_PLAYERS}.documents`,
+    (event) => {
+      const doc = event.payload as unknown as Record<string, unknown>;
+      if (doc.roomId !== roomId) return;
+      const id = (doc as unknown as { $id: string }).$id;
+      if (event.events.some((e: string) => e.includes(".delete"))) {
+        delete players[id];
+      } else {
+        players[id] = docToPlayer(doc);
+      }
+      players = { ...players };
+      callback(Object.keys(players).length > 0 ? players : null);
+    },
+  );
+
+  // 初回フェッチ
+  fetchPlayers(roomId).then(p => {
+    players = p;
+    callback(Object.keys(players).length > 0 ? players : null);
+  });
+
+  return unsub;
+}
+
+// 個別参加者の購読
+export function subscribeToPlayer(
+  roomId: string,
+  playerId: string,
+  callback: (player: Player | null) => void,
+): () => void {
+  const client = getClient();
+
+  const unsub = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_PLAYERS}.documents.${playerId}`,
+    (event) => {
+      if (event.events.some((e: string) => e.includes(".delete"))) {
+        callback(null);
+      } else {
+        callback(docToPlayer(event.payload as unknown as Record<string, unknown>));
+      }
+    },
+  );
+
+  // 初回フェッチ
+  getDatabases().getDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId)
+    .then(doc => callback(docToPlayer(doc as unknown as Record<string, unknown>)))
+    .catch(() => callback(null));
+
+  return unsub;
+}
+
+// メッセージ購読（roomドキュメントのmessages属性を監視）
+export function subscribeToMessages(
+  roomId: string,
+  callback: (messages: Record<string, AdminMessage> | null) => void,
+): () => void {
+  const client = getClient();
+
+  const unsub = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_ROOMS}.documents.${roomId}`,
+    (event) => {
+      const doc = event.payload as unknown as Record<string, unknown>;
+      callback(parseJson<Record<string, AdminMessage>>(doc.messages as string) || null);
+    },
+  );
+
+  getRoomDoc(roomId).then(doc => {
+    callback(doc ? parseJson<Record<string, AdminMessage>>(doc.messages as string) || null : null);
+  });
+
+  return unsub;
+}
+
+// ステップ回答の購読
+export function subscribeToStepResponses(
+  roomId: string,
+  stepIndex: number,
+  callback: (responses: Record<string, StepResponse> | null) => void,
+): () => void {
+  const client = getClient();
+  const key = String(stepIndex);
+
+  const unsub = client.subscribe(
+    `databases.${DATABASE_ID}.collections.${COLLECTION_ROOMS}.documents.${roomId}`,
+    (event) => {
+      const doc = event.payload as unknown as Record<string, unknown>;
+      const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string);
+      callback(all?.[key] || null);
+    },
+  );
+
+  getRoomDoc(roomId).then(doc => {
+    if (!doc) { callback(null); return; }
+    const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string);
+    callback(all?.[key] || null);
+  });
+
+  return unsub;
+}
+
+// ===== 台本操作 =====
+
+export async function updateScenario(roomId: string, steps: ScenarioStep[]): Promise<void> {
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    scenario: toJson({ steps }),
+  });
+}
+
 export async function addScenarioStep(roomId: string, step: ScenarioStep): Promise<void> {
   const room = await getRoom(roomId);
   if (!room) return;
@@ -143,16 +463,19 @@ export async function addScenarioStep(roomId: string, step: ScenarioStep): Promi
   await updateScenario(roomId, steps);
 }
 
-// ステート更新（進行操作）
-export async function updateRoomState(
-  roomId: string,
-  state: Partial<RoomState>
-): Promise<void> {
-  const stateRef = ref(getDb(), `rooms/${roomId}/state`);
-  await update(stateRef, state);
+// ===== ステート更新 =====
+
+export async function updateRoomState(roomId: string, state: Partial<RoomState>): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const current = parseJson<RoomState>(doc.state as string)!;
+  const merged = { ...current, ...state };
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    state: toJson(merged),
+  });
 }
 
-// 次のステップへ（ゲーム結果保存 + ステップ遷移をアトミックに実行）
+// 次のステップへ
 export async function goToNextStep(roomId: string): Promise<void> {
   const room = await getRoom(roomId);
   if (!room) return;
@@ -162,17 +485,19 @@ export async function goToNextStep(roomId: string): Promise<void> {
   if (currentStep >= totalSteps - 1) return;
 
   const nextStep = currentStep + 1;
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-
-  // ステップ遷移の基本更新
-  const updates: Record<string, unknown> = {
-    "state/currentStep": nextStep,
-    "state/phase": "waiting",
-    [`state/stepTimestamps/s${nextStep}`]: Date.now(),
-    currentGame: null,
+  const newState: RoomState = {
+    ...room.state,
+    currentStep: nextStep,
+    phase: "waiting",
+    stepTimestamps: { ...room.state.stepTimestamps, [`s${nextStep}`]: Date.now() },
   };
 
-  // ゲーム結果の自動保存（ゲームステップからの遷移時）— 同じ update に含める
+  const updates: Record<string, string> = {
+    state: toJson(newState),
+    currentGame: "",
+  };
+
+  // ゲーム結果の自動保存
   const currentStepDef = room.scenario?.steps?.[currentStep];
   if (currentStepDef && (currentStepDef.type === "table_game" || currentStepDef.type === "whole_game") && room.currentGame) {
     const cg = room.currentGame;
@@ -187,21 +512,16 @@ export async function goToNextStep(roomId: string): Promise<void> {
         });
       }
       gameResult = {
-        type: cg.type,
-        scope: cg.scope,
-        questions: {},
-        answers: {},
-        scores,
-        completedAt: Date.now(),
+        type: cg.type, scope: cg.scope,
+        questions: {}, answers: {},
+        scores, completedAt: Date.now(),
         streamsHistory: cg.streams?.history || [],
         boards: cg.boards || {},
       };
     } else {
       const { calculateTotalScores } = await import("./scoring");
       let scores: Record<string, number>;
-
       if (cg.scope === "table") {
-        // テーブルゲーム: テーブルごとにスコア計算してマージ
         const assignments = room.publishedTables?.assignments || {};
         const tableNumbers = [...new Set(Object.values(assignments))];
         scores = {};
@@ -214,51 +534,46 @@ export async function goToNextStep(roomId: string): Promise<void> {
       } else {
         scores = calculateTotalScores(cg.type, cg.answers || {}, cg.scope);
       }
-
       gameResult = {
-        type: cg.type,
-        scope: cg.scope,
-        questions: cg.questions || {},
-        answers: cg.answers || {},
-        scores,
-        completedAt: Date.now(),
+        type: cg.type, scope: cg.scope,
+        questions: cg.questions || {}, answers: cg.answers || {},
+        scores, completedAt: Date.now(),
       };
     }
 
-    // gameResult を同じ update バッチに含めてアトミックに書き込む
-    const cleanResult = stripUndefined(gameResult);
-    Object.entries(cleanResult as unknown as Record<string, unknown>).forEach(([key, value]) => {
-      updates[`gameResults/${currentStep}/${key}`] = value;
-    });
+    const currentResults = room.gameResults || {};
+    currentResults[String(currentStep)] = gameResult;
+    updates.gameResults = toJson(currentResults);
   }
 
-  await update(roomRef, updates);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, updates);
+  // 回答コレクションもクリア
+  await deleteAllInCollection(COLLECTION_ANSWERS, roomId);
 }
 
 // 前のステップへ
 export async function goToPrevStep(roomId: string): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const state = parseJson<RoomState>(doc.state as string)!;
+  if (state.currentStep <= 0) return;
 
-  const currentStep = room.state.currentStep;
+  const prevStep = state.currentStep - 1;
+  state.currentStep = prevStep;
+  state.phase = "waiting";
+  state.stepTimestamps = { ...state.stepTimestamps, [`s${prevStep}`]: Date.now() };
 
-  if (currentStep > 0) {
-    const prevStep = currentStep - 1;
-    const roomRef = ref(getDb(), `rooms/${roomId}`);
-    await update(roomRef, {
-      "state/currentStep": prevStep,
-      "state/phase": "waiting",
-      [`state/stepTimestamps/s${prevStep}`]: Date.now(),
-    });
-  }
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    state: toJson(state),
+  });
 }
 
-// フェーズの更新
 export async function setPhase(roomId: string, phase: Phase): Promise<void> {
   await updateRoomState(roomId, { phase });
 }
 
-// ゲーム開始
+// ===== ゲーム操作 =====
+
 export async function startGame(
   roomId: string,
   gameType: GameType,
@@ -266,30 +581,39 @@ export async function startGame(
   autoProgress: boolean,
   anonymousMode?: boolean,
 ): Promise<void> {
-  const gameRef = ref(getDb(), `rooms/${roomId}/currentGame`);
   const game: CurrentGame = {
-    type: gameType,
-    scope,
-    autoProgress,
+    type: gameType, scope, autoProgress,
     anonymousMode: anonymousMode || undefined,
   };
-  await set(gameRef, stripUndefined(game));
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(game),
+  });
   await setPhase(roomId, "playing");
 }
 
-// テーブルの進行状態を更新
 export async function advanceTableProgress(roomId: string, tableKey: string, nextIndex: number): Promise<void> {
-  const progressRef = ref(getDb(), `rooms/${roomId}/currentGame/tableProgress/${tableKey}`);
-  await set(progressRef, nextIndex);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg) return;
+  if (!cg.tableProgress) cg.tableProgress = {};
+  cg.tableProgress[tableKey] = nextIndex;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
 }
 
-// 全体モードの進行状態を更新
 export async function advanceGameProgress(roomId: string, nextIndex: number): Promise<void> {
-  const idxRef = ref(getDb(), `rooms/${roomId}/currentGame/currentQuestionIdx`);
-  await set(idxRef, nextIndex);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg) return;
+  cg.currentQuestionIdx = nextIndex;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
 }
 
-// テーブル自動進行ゲーム開始（全問題を事前ロード）
 export async function startGameWithAutoProgress(
   roomId: string,
   gameType: GameType,
@@ -303,11 +627,8 @@ export async function startGameWithAutoProgress(
   presetQuestions.forEach((pq, i) => {
     const qId = `q_${now}_${i}`;
     const q: Question = {
-      text: pq.text,
-      timeLimit: 0,
-      status: "open",
-      inputType: pq.inputType,
-      sentAt: now + i,
+      text: pq.text, timeLimit: 0, status: "open",
+      inputType: pq.inputType, sentAt: now + i,
     };
     if (pq.inputType === "select" && pq.options) {
       q.options = pq.options.filter(o => o.trim());
@@ -317,23 +638,19 @@ export async function startGameWithAutoProgress(
   });
 
   const game: CurrentGame = {
-    type: gameType,
-    scope: "table",
-    autoProgress: true,
+    type: gameType, scope: "table", autoProgress: true,
     anonymousMode: anonymousMode || undefined,
-    questions,
-    questionOrder,
-    tableProgress: {},
+    questions, questionOrder, tableProgress: {},
     activeQuestionId: questionOrder[0],
     sentQuestionIndices: presetQuestions.map((_, i) => i),
   };
 
-  const gameRef = ref(getDb(), `rooms/${roomId}/currentGame`);
-  await set(gameRef, stripUndefined(game));
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(game),
+  });
   await setPhase(roomId, "playing");
 }
 
-// テーブル全員回答チェック＆自動進行
 export async function checkAndAdvanceTable(
   roomId: string,
   questionId: string,
@@ -347,11 +664,9 @@ export async function checkAndAdvanceTable(
   const tableKey = `table_${tableNumber}`;
   const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
 
-  // 既に全問完了 or 対象問題がテーブルの現在の問題でない
   if (currentIdx >= questionOrder.length) return false;
   if (questionOrder[currentIdx] !== questionId) return false;
 
-  // publishedAssignments からテーブルメンバーを取得（登録済みプレイヤーのみ）
   const assignments = room.publishedTables?.assignments || {};
   const tablePlayers = Object.entries(assignments)
     .filter(([pid, tNum]) => tNum === tableNumber && room.players?.[pid])
@@ -359,450 +674,434 @@ export async function checkAndAdvanceTable(
 
   if (tablePlayers.length === 0) return false;
 
-  // 全員回答済みかチェック
-  const answers = room.currentGame.answers?.[questionId] || {};
-  const allAnswered = tablePlayers.every(pid => pid in answers);
+  const answersForQ = room.currentGame.answers?.[questionId] || {};
+  const allAnswered = tablePlayers.every(pid => pid in answersForQ);
   if (!allAnswered) return false;
 
-  // テーブル進行
   await advanceTableProgress(roomId, tableKey, currentIdx + 1);
   return true;
 }
 
-// 管理者用: テーブルを強制進行
-export async function forceAdvanceTable(
-  roomId: string,
-  tableNumber: number,
-): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room?.currentGame?.questionOrder) return;
+export async function forceAdvanceTable(roomId: string, tableNumber: number): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.questionOrder) return;
 
   const tableKey = `table_${tableNumber}`;
-  const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
-  const maxIdx = room.currentGame.questionOrder.length;
-
-  if (currentIdx < maxIdx) {
-    await advanceTableProgress(roomId, tableKey, currentIdx + 1);
+  const currentIdx = cg.tableProgress?.[tableKey] ?? 0;
+  if (currentIdx < cg.questionOrder.length) {
+    if (!cg.tableProgress) cg.tableProgress = {};
+    cg.tableProgress[tableKey] = currentIdx + 1;
+    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+      currentGame: toJson(cg),
+    });
   }
 }
 
-// 管理者用: 全テーブルを特定インデックスまで強制進行
-export async function forceAdvanceAllTables(
-  roomId: string,
-  targetIndex: number,
-): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room?.currentGame?.questionOrder) return;
+export async function forceAdvanceAllTables(roomId: string, targetIndex: number): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.questionOrder) return;
 
-  const tableCount = room.config.tableCount;
-  const updates: Record<string, number> = {};
-  for (let t = 1; t <= tableCount; t++) {
+  const config = parseJson<RoomConfig>(doc.config as string)!;
+  let changed = false;
+  if (!cg.tableProgress) cg.tableProgress = {};
+  for (let t = 1; t <= config.tableCount; t++) {
     const tableKey = `table_${t}`;
-    const currentIdx = room.currentGame.tableProgress?.[tableKey] ?? 0;
+    const currentIdx = cg.tableProgress[tableKey] ?? 0;
     if (currentIdx < targetIndex) {
-      updates[`currentGame/tableProgress/${tableKey}`] = targetIndex;
+      cg.tableProgress[tableKey] = targetIndex;
+      changed = true;
     }
   }
-
-  if (Object.keys(updates).length > 0) {
-    const roomRef = ref(getDb(), `rooms/${roomId}`);
-    await update(roomRef, updates);
+  if (changed) {
+    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+      currentGame: toJson(cg),
+    });
   }
 }
 
-// お題の送出（ログ形式で蓄積）
+// ===== お題操作 =====
+
 export async function sendQuestion(
   roomId: string,
   text: string,
   inputType: "text" | "number" | "select" = "text",
   options?: string[],
-  presetIndex?: number // 事前設定お題のインデックス（送出済み追跡用）
+  presetIndex?: number,
 ): Promise<void> {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string) || {} as CurrentGame;
   const questionId = `q_${Date.now()}`;
 
-  // Firebase は undefined を受け付けないので、options は select 時のみ含める
   const question: Question = inputType === "select" && options
     ? { text, timeLimit: 0, status: "open", inputType, options, sentAt: Date.now() }
     : { text, timeLimit: 0, status: "open", inputType, sentAt: Date.now() };
 
-  const updates: Record<string, unknown> = {
-    [`currentGame/questions/${questionId}`]: question,
-    "currentGame/activeQuestionId": questionId,
-  };
+  if (!cg.questions) cg.questions = {};
+  cg.questions[questionId] = question;
+  cg.activeQuestionId = questionId;
 
-  // 事前設定お題の場合、送出済みリストに追加
   if (presetIndex !== undefined) {
-    const room = await getRoom(roomId);
-    const currentSent = room?.currentGame?.sentQuestionIndices || [];
+    const currentSent = cg.sentQuestionIndices || [];
     if (!currentSent.includes(presetIndex)) {
-      updates["currentGame/sentQuestionIndices"] = [...currentSent, presetIndex];
+      cg.sentQuestionIndices = [...currentSent, presetIndex];
     }
   }
 
-  await update(roomRef, updates);
-}
-
-// 回答の再開（締切→受付中に戻す）
-export async function reopenQuestion(roomId: string, questionId: string): Promise<void> {
-  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/questions/${questionId}/status`);
-  await set(statusRef, "open");
-}
-
-// 回答公開を取り消す（revealed→closedに戻し、revealScopeを削除）
-export async function hideAnswers(roomId: string, questionId: string): Promise<void> {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, {
-    [`currentGame/questions/${questionId}/status`]: "closed",
-    [`currentGame/questions/${questionId}/revealScope`]: null,
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
   });
 }
 
-// 回答の締切（指定のお題）
-export async function closeQuestion(roomId: string, questionId?: string): Promise<void> {
-  let targetId = questionId;
-  if (!targetId) {
-    const room = await getRoom(roomId);
-    targetId = room?.currentGame?.activeQuestionId;
-  }
-  if (!targetId) return;
-
-  const statusRef = ref(getDb(), `rooms/${roomId}/currentGame/questions/${targetId}/status`);
-  await set(statusRef, "closed");
+export async function reopenQuestion(roomId: string, questionId: string): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.questions?.[questionId]) return;
+  cg.questions[questionId].status = "open";
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
 }
 
-// 結果の公開（指定のお題 + スコープ）
+export async function hideAnswers(roomId: string, questionId: string): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.questions?.[questionId]) return;
+  cg.questions[questionId].status = "closed";
+  delete cg.questions[questionId].revealScope;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
+}
+
+export async function closeQuestion(roomId: string, questionId?: string): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg) return;
+  const targetId = questionId || cg.activeQuestionId;
+  if (!targetId || !cg.questions?.[targetId]) return;
+  cg.questions[targetId].status = "closed";
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
+}
+
 export async function revealAnswers(
   roomId: string,
   questionId?: string,
-  revealScope?: AnswerRevealScope
+  revealScope?: AnswerRevealScope,
 ): Promise<void> {
-  let targetId = questionId;
-  if (!targetId) {
-    const room = await getRoom(roomId);
-    targetId = room?.currentGame?.activeQuestionId;
-  }
-  if (!targetId) return;
-
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  const updates: Record<string, unknown> = {
-    [`currentGame/questions/${targetId}/status`]: "revealed",
-  };
-  if (revealScope) {
-    updates[`currentGame/questions/${targetId}/revealScope`] = revealScope;
-  }
-  await update(roomRef, updates);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg) return;
+  const targetId = questionId || cg.activeQuestionId;
+  if (!targetId || !cg.questions?.[targetId]) return;
+  cg.questions[targetId].status = "revealed";
+  if (revealScope) cg.questions[targetId].revealScope = revealScope;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
 }
 
-// ゲームリセット（全お題・回答をクリア）
 export async function resetCurrentGame(roomId: string): Promise<void> {
-  const roomRef = ref(getDb(), `rooms/${roomId}/currentGame`);
-  await update(ref(getDb(), `rooms/${roomId}`), {
-    "currentGame/questions": null,
-    "currentGame/answers": null,
-    "currentGame/activeQuestionId": null,
-    "currentGame/sentQuestionIndices": null,
-  });
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (cg) {
+    delete cg.questions;
+    delete cg.answers;
+    delete cg.activeQuestionId;
+    delete cg.sentQuestionIndices;
+    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+      currentGame: toJson(cg),
+    });
+  }
+  await deleteAllInCollection(COLLECTION_ANSWERS, roomId);
 }
 
-// スコアボード表示トグル
 export async function toggleScoreboard(roomId: string, show: boolean): Promise<void> {
-  await update(ref(getDb(), `rooms/${roomId}/currentGame`), {
-    showScoreboard: show || null,
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg) return;
+  cg.showScoreboard = show || undefined;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
   });
 }
 
-// ゲーム結果の永続化
 export async function saveGameResult(roomId: string, stepIndex: number, gameResult: GameResult): Promise<void> {
-  const resultRef = ref(getDb(), `rooms/${roomId}/gameResults/${stepIndex}`);
-  await set(resultRef, stripUndefined(gameResult));
-}
-
-// 参加者一覧の購読
-export function subscribeToPlayers(
-  roomId: string,
-  callback: (players: Record<string, Player> | null) => void
-): () => void {
-  const playersRef = ref(getDb(), `rooms/${roomId}/players`);
-  onValue(playersRef, (snapshot) => {
-    callback(snapshot.exists() ? snapshot.val() : null);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const results = parseJson<Record<string, GameResult>>(doc.gameResults as string) || {};
+  results[String(stepIndex)] = gameResult;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    gameResults: toJson(results),
   });
-  return () => off(playersRef);
 }
 
-// テーブル数の更新
+// ===== 設定更新 =====
+
+async function updateConfig(roomId: string, updater: (config: RoomConfig) => void): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const config = parseJson<RoomConfig>(doc.config as string)!;
+  updater(config);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    config: toJson(config),
+  });
+}
+
 export async function updateTableCount(roomId: string, count: number): Promise<void> {
-  const configRef = ref(getDb(), `rooms/${roomId}/config/tableCount`);
-  await set(configRef, count);
+  await updateConfig(roomId, c => { c.tableCount = count; });
 }
 
-// 管理者名の更新
 export async function updateAdminName(roomId: string, name: string): Promise<void> {
-  const nameRef = ref(getDb(), `rooms/${roomId}/config/adminName`);
-  await set(nameRef, name || null);
+  await updateConfig(roomId, c => { c.adminName = name || undefined; });
 }
 
-// イベント名の更新
 export async function updateEventName(roomId: string, name: string): Promise<void> {
-  const nameRef = ref(getDb(), `rooms/${roomId}/config/eventName`);
-  await set(nameRef, name);
+  await updateConfig(roomId, c => { c.eventName = name; });
 }
 
-// イベント日時の更新
 export async function updateEventDate(roomId: string, date: string): Promise<void> {
-  const dateRef = ref(getDb(), `rooms/${roomId}/config/eventDate`);
-  await set(dateRef, date);
+  await updateConfig(roomId, c => { c.eventDate = date; });
 }
 
-// エントリーフィールドの更新
 export async function updateEntryFields(roomId: string, fields: EntryField[]): Promise<void> {
-  const fieldsRef = ref(getDb(), `rooms/${roomId}/config/entryFields`);
-  await set(fieldsRef, fields);
+  await updateConfig(roomId, c => { c.entryFields = fields; });
 }
 
-// ルーム設定の個別フィールドを更新
 export async function updateRoomConfigField(roomId: string, field: string, value: unknown): Promise<void> {
-  const fieldRef = ref(getDb(), `rooms/${roomId}/config/${field}`);
-  await set(fieldRef, value);
+  await updateConfig(roomId, c => { (c as unknown as Record<string, unknown>)[field] = value; });
 }
 
-// 参加者のテーブル番号を更新
+// ===== プレイヤー操作 =====
+
+export async function addPlayer(roomId: string, playerData: Omit<Player, "connected" | "joinedAt">): Promise<string> {
+  const doc = await getDatabases().createDocument(DATABASE_ID, COLLECTION_PLAYERS, ID.unique(), {
+    roomId,
+    name: playerData.name,
+    tableNumber: playerData.tableNumber,
+    connected: true,
+    joinedAt: Date.now(),
+    fields: toJson(playerData.fields),
+  });
+  return doc.$id;
+}
+
 export async function updatePlayerTable(roomId: string, playerId: string, tableNumber: number): Promise<void> {
-  const tableRef = ref(getDb(), `rooms/${roomId}/players/${playerId}/tableNumber`);
-  await set(tableRef, tableNumber);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, { tableNumber });
 }
 
-// 参加者のフィールドを更新（追加項目への対応）
 export async function updatePlayerFields(
   roomId: string,
   playerId: string,
-  fields: Record<string, string | number>
+  fields: Record<string, string | number>,
 ): Promise<void> {
-  const fieldsRef = ref(getDb(), `rooms/${roomId}/players/${playerId}/fields`);
-  await update(fieldsRef, fields);
-}
-
-// 参加者の削除（キック）
-export async function removePlayer(roomId: string, playerId: string): Promise<void> {
-  const playerRef = ref(getDb(), `rooms/${roomId}/players/${playerId}`);
-  await set(playerRef, null);
-}
-
-// 個別参加者の購読
-export function subscribeToPlayer(
-  roomId: string,
-  playerId: string,
-  callback: (player: Player | null) => void
-): () => void {
-  const playerRef = ref(getDb(), `rooms/${roomId}/players/${playerId}`);
-  onValue(playerRef, (snapshot) => {
-    callback(snapshot.exists() ? snapshot.val() : null);
+  const doc = await getDatabases().getDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId);
+  const current = parseJson<Record<string, string | number>>((doc as unknown as Record<string, unknown>).fields as string) || {};
+  const merged = { ...current, ...fields };
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, {
+    fields: toJson(merged),
   });
-  return () => off(playerRef);
 }
 
-// 参加者の追加
-export async function addPlayer(roomId: string, playerData: Omit<Player, "connected" | "joinedAt">): Promise<string> {
-  const playersRef = ref(getDb(), `rooms/${roomId}/players`);
-  const newRef = push(playersRef);
-  const player: Player = {
-    ...playerData,
-    connected: true,
-    joinedAt: Date.now(),
-  };
-  await set(newRef, player);
-  return newRef.key!;
+export async function removePlayer(roomId: string, playerId: string): Promise<void> {
+  await getDatabases().deleteDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId).catch(() => {});
 }
 
-// ========== 管理者メッセージ ==========
+// ===== メッセージ =====
 
-// メッセージ送信
 export async function sendAdminMessage(
   roomId: string,
   text: string,
   target: MessageTarget,
-  currentStep: number
+  currentStep: number,
 ): Promise<void> {
-  const messagesRef = ref(getDb(), `rooms/${roomId}/messages`);
-  const newRef = push(messagesRef);
-  const message: AdminMessage = {
-    id: newRef.key!,
-    text,
-    target,
-    sentAt: Date.now(),
-    sentDuringStep: currentStep,
-  };
-  await set(newRef, message);
-}
-
-// メッセージ購読
-export function subscribeToMessages(
-  roomId: string,
-  callback: (messages: Record<string, AdminMessage> | null) => void
-): () => void {
-  const messagesRef = ref(getDb(), `rooms/${roomId}/messages`);
-  onValue(messagesRef, (snapshot) => {
-    callback(snapshot.exists() ? snapshot.val() : null);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const messages = parseJson<Record<string, AdminMessage>>(doc.messages as string) || {};
+  const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  messages[msgId] = { id: msgId, text, target, sentAt: Date.now(), sentDuringStep: currentStep };
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    messages: toJson(messages),
   });
-  return () => off(messagesRef);
 }
 
-// ========== ステップ入力・回答 ==========
+// ===== ステップ回答 =====
 
-// 参加者の回答送信
 export async function submitStepResponse(
   roomId: string,
   stepIndex: number,
   playerId: string,
   value: string | number,
   playerName: string,
-  tableNumber: number
+  tableNumber: number,
 ): Promise<void> {
-  const responseRef = ref(getDb(), `rooms/${roomId}/stepResponses/${stepIndex}/${playerId}`);
-  const response: StepResponse = {
-    value,
-    submittedAt: Date.now(),
-    playerName,
-    tableNumber,
-  };
-  await set(responseRef, response);
-}
-
-// 特定ステップの回答購読（管理者用）
-export function subscribeToStepResponses(
-  roomId: string,
-  stepIndex: number,
-  callback: (responses: Record<string, StepResponse> | null) => void
-): () => void {
-  const responsesRef = ref(getDb(), `rooms/${roomId}/stepResponses/${stepIndex}`);
-  onValue(responsesRef, (snapshot) => {
-    callback(snapshot.exists() ? snapshot.val() : null);
-  });
-  return () => off(responsesRef);
-}
-
-// 開示設定
-export async function setStepReveal(
-  roomId: string,
-  stepIndex: number,
-  reveal: StepInputReveal
-): Promise<void> {
-  const revealRef = ref(getDb(), `rooms/${roomId}/stepReveals/${stepIndex}`);
-  await set(revealRef, reveal);
-}
-
-// 開示解除
-export async function clearStepReveal(
-  roomId: string,
-  stepIndex: number
-): Promise<void> {
-  const revealRef = ref(getDb(), `rooms/${roomId}/stepReveals/${stepIndex}`);
-  await set(revealRef, null);
-}
-
-// 回答リセット（特定ステップ）
-export async function resetStepResponses(
-  roomId: string,
-  stepIndex: number
-): Promise<void> {
-  const responsesRef = ref(getDb(), `rooms/${roomId}/stepResponses/${stepIndex}`);
-  await set(responsesRef, null);
-}
-
-// 回答＆開示の両方をリセット
-export async function resetStepAll(
-  roomId: string,
-  stepIndex: number
-): Promise<void> {
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, {
-    [`stepResponses/${stepIndex}`]: null,
-    [`stepReveals/${stepIndex}`]: null,
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
+  const key = String(stepIndex);
+  if (!all[key]) all[key] = {};
+  all[key][playerId] = { value, submittedAt: Date.now(), playerName, tableNumber };
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    stepResponses: toJson(all),
   });
 }
 
-// ========== 回答開示の個別表示制御 ==========
+export async function setStepReveal(roomId: string, stepIndex: number, reveal: StepInputReveal): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const all = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
+  all[String(stepIndex)] = reveal;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    stepReveals: toJson(all),
+  });
+}
 
-// 個別お題の可視性を設定
+export async function clearStepReveal(roomId: string, stepIndex: number): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const all = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
+  delete all[String(stepIndex)];
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    stepReveals: toJson(all),
+  });
+}
+
+export async function resetStepResponses(roomId: string, stepIndex: number): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
+  delete all[String(stepIndex)];
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    stepResponses: toJson(all),
+  });
+}
+
+export async function resetStepAll(roomId: string, stepIndex: number): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const responses = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
+  const reveals = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
+  delete responses[String(stepIndex)];
+  delete reveals[String(stepIndex)];
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    stepResponses: toJson(responses),
+    stepReveals: toJson(reveals),
+  });
+}
+
 export async function setRevealQuestionVisibility(
   roomId: string,
   stepIndex: number,
   questionId: string,
   visible: boolean,
 ): Promise<void> {
-  const visRef = ref(getDb(), `rooms/${roomId}/revealVisibility/${stepIndex}/${questionId}`);
-  await set(visRef, visible);
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const all = parseJson<Record<string, Record<string, boolean>>>(doc.revealVisibility as string) || {};
+  if (!all[String(stepIndex)]) all[String(stepIndex)] = {};
+  all[String(stepIndex)][questionId] = visible;
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    revealVisibility: toJson(all),
+  });
 }
 
-// ========== ステップ割り込み ==========
+// ===== ステップ割り込み =====
 
-// 割り込みステップ挿入（currentStep+1に挿入し、オプションで自動進行）
 export async function insertStepAfterCurrent(
   roomId: string,
   newStep: ScenarioStep,
-  autoAdvance: boolean
+  autoAdvance: boolean,
 ): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room || !room.scenario) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const state = parseJson<RoomState>(doc.state as string)!;
+  const scenario = parseJson<{ steps: ScenarioStep[] }>(doc.scenario as string);
+  if (!scenario) return;
 
-  const currentStep = room.state.currentStep;
-  const steps = [...room.scenario.steps];
-  steps.splice(currentStep + 1, 0, newStep);
+  const currentStep = state.currentStep;
+  scenario.steps.splice(currentStep + 1, 0, newStep);
 
-  const updates: Record<string, unknown> = {
-    "scenario/steps": stripUndefined(steps),
+  const updates: Record<string, string> = {
+    scenario: toJson(scenario),
   };
 
   if (autoAdvance) {
-    updates["state/currentStep"] = currentStep + 1;
-    updates["state/phase"] = "waiting";
-    updates[`state/stepTimestamps/s${currentStep + 1}`] = Date.now();
+    state.currentStep = currentStep + 1;
+    state.phase = "waiting";
+    state.stepTimestamps = { ...state.stepTimestamps, [`s${currentStep + 1}`]: Date.now() };
+    updates.state = toJson(state);
   }
 
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, updates);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, updates);
 }
 
-// プレゼンス（接続状態）の登録
-export function registerPresence(roomId: string, playerId: string): () => void {
-  const db = getDb();
-  const connectedRef = ref(db, ".info/connected");
-  const playerConnRef = ref(db, `rooms/${roomId}/players/${playerId}/connected`);
+// ===== プレゼンス =====
 
-  const unsubscribe = onValue(connectedRef, (snap) => {
-    if (snap.val() === true) {
-      onDisconnect(playerConnRef).set(false);
-      set(playerConnRef, true);
-    }
-  });
+export function registerPresence(roomId: string, playerId: string): () => void {
+  const db = getDatabases();
+
+  // 接続時に connected = true
+  db.updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, { connected: true }).catch(() => {});
+
+  const handleBeforeUnload = () => {
+    db.updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, { connected: false }).catch(() => {});
+  };
+
+  const handleVisibilityChange = () => {
+    const connected = document.visibilityState === "visible";
+    db.updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, { connected }).catch(() => {});
+  };
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  }
 
   return () => {
-    unsubscribe();
-    set(playerConnRef, false);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    }
+    db.updateDocument(DATABASE_ID, COLLECTION_PLAYERS, playerId, { connected: false }).catch(() => {});
   };
 }
 
-// テーブル情報をプッシュ（管理者の作業用 tableNumber をスナップショットとして公開）
+// ===== テーブル操作 =====
+
 export async function publishTables(roomId: string): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room || !room.players) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const players = await fetchPlayers(roomId);
+  if (Object.keys(players).length === 0) return;
 
   const assignments: Record<string, number> = {};
-  Object.entries(room.players).forEach(([id, player]) => {
+  Object.entries(players).forEach(([id, player]) => {
     assignments[id] = player.tableNumber;
   });
 
   const now = Date.now();
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  const historyRef = push(ref(getDb(), `rooms/${roomId}/publishHistory`));
+  const historyId = `pub_${now}`;
+  const history = parseJson<Record<string, { pushedAt: number; assignments: Record<string, number> }>>(doc.publishHistory as string) || {};
+  history[historyId] = { pushedAt: now, assignments };
 
-  await update(roomRef, {
-    publishedTables: { assignments, pushedAt: now },
-    [`publishHistory/${historyRef.key}`]: { pushedAt: now, assignments },
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    publishedTables: toJson({ assignments, pushedAt: now }),
+    publishHistory: toJson(history),
   });
 }
 
-// Fisher-Yatesシャッフル（配列をインプレースでシャッフル）
 function shuffleArray<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -811,47 +1110,45 @@ function shuffleArray<T>(arr: T[]): T[] {
   return arr;
 }
 
-// 完全席シャッフル（全員をランダムに再配分）
 export async function shuffleTables(roomId: string): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room || !room.players) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const config = parseJson<RoomConfig>(doc.config as string)!;
+  const players = await fetchPlayers(roomId);
 
-  const tableCount = room.config.tableCount || 1;
-  const assignedIds = Object.entries(room.players)
+  const tableCount = config.tableCount || 1;
+  const assignedIds = Object.entries(players)
     .filter(([, p]) => p.tableNumber > 0)
     .map(([id]) => id);
 
   shuffleArray(assignedIds);
 
-  const updates: Record<string, number> = {};
-  assignedIds.forEach((id, idx) => {
-    updates[`players/${id}/tableNumber`] = (idx % tableCount) + 1;
-  });
-
-  if (Object.keys(updates).length > 0) {
-    const roomRef = ref(getDb(), `rooms/${roomId}`);
-    await update(roomRef, updates);
-  }
+  await Promise.all(
+    assignedIds.map((id, idx) =>
+      getDatabases().updateDocument(DATABASE_ID, COLLECTION_PLAYERS, id, {
+        tableNumber: (idx % tableCount) + 1,
+      })
+    )
+  );
 }
 
-// 半数シャッフル（各テーブルから約半数を抜き出し、別テーブルへ再配分）
 export async function halfShuffleTables(roomId: string): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room || !room.players) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const config = parseJson<RoomConfig>(doc.config as string)!;
+  const players = await fetchPlayers(roomId);
 
-  const tableCount = room.config.tableCount || 1;
-  if (tableCount < 2) return; // テーブル1つでは意味がない
+  const tableCount = config.tableCount || 1;
+  if (tableCount < 2) return;
 
-  // テーブルごとにプレイヤーを分類
   const byTable: Record<number, string[]> = {};
   for (let t = 1; t <= tableCount; t++) byTable[t] = [];
-  Object.entries(room.players).forEach(([id, p]) => {
+  Object.entries(players).forEach(([id, p]) => {
     if (p.tableNumber > 0 && byTable[p.tableNumber]) {
       byTable[p.tableNumber].push(id);
     }
   });
 
-  // 各テーブルから半数（切り捨て）をランダムに抜き出す
   const movers: string[] = [];
   const stayers: Record<number, string[]> = {};
   for (let t = 1; t <= tableCount; t++) {
@@ -861,51 +1158,46 @@ export async function halfShuffleTables(roomId: string): Promise<void> {
     stayers[t] = members.slice(moveCount);
   }
 
-  // 移動者をシャッフルして、元のテーブル以外に配分
   shuffleArray(movers);
 
-  // 各テーブルの空き枠を計算（均等配分を目指す）
   const totalPlayers = Object.values(byTable).reduce((s, arr) => s + arr.length, 0);
   const targetPerTable = Math.ceil(totalPlayers / tableCount);
 
-  const updates: Record<string, number> = {};
-
-  // 移動者を空きの多いテーブルから順に埋める（元テーブルを避ける）
   const originalTable: Record<string, number> = {};
-  Object.entries(room.players).forEach(([id, p]) => {
+  Object.entries(players).forEach(([id, p]) => {
     if (p.tableNumber > 0) originalTable[id] = p.tableNumber;
   });
 
   const currentCounts: Record<number, number> = {};
   for (let t = 1; t <= tableCount; t++) currentCounts[t] = stayers[t].length;
 
+  const updates: { id: string; table: number }[] = [];
   for (const id of movers) {
-    // 空きが最も多いテーブルを選ぶ（元テーブルは最後の手段）
     const candidates = Array.from({ length: tableCount }, (_, i) => i + 1)
-      .filter((t) => t !== originalTable[id] && currentCounts[t] < targetPerTable);
+      .filter(t => t !== originalTable[id] && currentCounts[t] < targetPerTable);
 
     let dest: number;
     if (candidates.length > 0) {
       dest = candidates.reduce((a, b) => currentCounts[a] <= currentCounts[b] ? a : b);
     } else {
-      // 全テーブル満杯 or 元テーブルしかない場合、一番空いてるところへ
       dest = Array.from({ length: tableCount }, (_, i) => i + 1)
         .reduce((a, b) => currentCounts[a] <= currentCounts[b] ? a : b);
     }
 
-    updates[`players/${id}/tableNumber`] = dest;
+    updates.push({ id, table: dest });
     currentCounts[dest]++;
   }
 
-  if (Object.keys(updates).length > 0) {
-    const roomRef = ref(getDb(), `rooms/${roomId}`);
-    await update(roomRef, updates);
-  }
+  await Promise.all(
+    updates.map(u =>
+      getDatabases().updateDocument(DATABASE_ID, COLLECTION_PLAYERS, u.id, { tableNumber: u.table })
+    )
+  );
 }
 
-// ========== 色グループスコア計算（くるっくりん用） ==========
+// ===== Streams系ゲーム =====
 
-const COLOR_GROUP_SCORE = [0, 0, 3, 5, 7, 12, 19]; // index=サイズ, 孤立=0, 6+=19
+const COLOR_GROUP_SCORE = [0, 0, 3, 5, 7, 12, 19];
 
 export function calculateColorScore(rows: number[][], colors: string[][]): number {
   const numRows = rows.length;
@@ -913,33 +1205,28 @@ export function calculateColorScore(rows: number[][], colors: string[][]): numbe
 
   let totalScore = 0;
 
-  // 横方向: 各行で同色の連続グループを計算
   for (let ri = 0; ri < numRows; ri++) {
     let ci = 0;
     while (ci < rows[ri].length) {
       const color = colors[ri]?.[ci];
       if (!color) { ci++; continue; }
-
-      // 同色の連続をカウント
       let groupSize = 1;
       while (ci + groupSize < rows[ri].length && colors[ri]?.[ci + groupSize] === color) {
         groupSize++;
       }
-
       totalScore += groupSize >= 6 ? 19 : COLOR_GROUP_SCORE[groupSize];
       ci += groupSize;
     }
   }
 
-  // 縦方向: 各列で3行全て同色なら +ボーナス（1本目3pt, 2本目4pt, 3本目5pt...）
-  const numCols = Math.max(...rows.map((r) => r.length));
+  const numCols = Math.max(...rows.map(r => r.length));
   if (numRows === 3) {
     let verticalCount = 0;
     for (let ci = 0; ci < numCols; ci++) {
       const c0 = colors[0]?.[ci];
       if (c0 && c0 === colors[1]?.[ci] && c0 === colors[2]?.[ci]) {
         verticalCount++;
-        totalScore += 2 + verticalCount; // 3, 4, 5, 6, ...
+        totalScore += 2 + verticalCount;
       }
     }
   }
@@ -947,177 +1234,125 @@ export function calculateColorScore(rows: number[][], colors: string[][]): numbe
   return totalScore;
 }
 
-// ========== Streams系ゲーム（くるっくりん / メタストリームス） ==========
-
-// ゲーム開始（デッキ生成→ボード初期化）
-export async function initStreamsGame(
-  roomId: string,
-  gameType: GameType,
-): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room || !room.players) return;
+export async function initStreamsGame(roomId: string, gameType: GameType): Promise<void> {
+  const players = await fetchPlayers(roomId);
+  if (Object.keys(players).length === 0) return;
 
   const deck = generateDeck(gameType);
   const boards: Record<string, PlayerBoard> = {};
-
   const isKrukkurin = gameType === "krukkurin";
 
-  // 全参加者分のボードを初期化
-  Object.keys(room.players).forEach((pid) => {
+  Object.keys(players).forEach(pid => {
     boards[pid] = {
       rows: createEmptyBoard(gameType),
       ...(isKrukkurin ? { colors: createEmptyColors(gameType) } : {}),
-      passCount: 0,
-      eliminated: false,
-      completed: false,
-      score: 0,
-      acted: false,
+      passCount: 0, eliminated: false, completed: false, score: 0, acted: false,
     };
   });
 
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, {
-    currentGame: stripUndefined({
-      type: gameType,
-      scope: "whole" as const,
-      autoProgress: false,
-      streams: {
-        deck,
-        currentCardIdx: -1,
-        currentCard: null,
-        history: [],
-      },
-      boards,
-    }),
-    "state/phase": "playing",
+  const game: CurrentGame = {
+    type: gameType, scope: "whole", autoProgress: false,
+    streams: { deck, currentCardIdx: -1, currentCard: null, history: [] },
+    boards,
+  };
+
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(game),
+    state: toJson({ ...(parseJson<RoomState>((await getRoomDoc(roomId))?.state as string) || { currentStep: 0, phase: "waiting" }), phase: "playing" }),
   });
 }
 
-// カードをめくる
 export async function flipCard(roomId: string): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room?.currentGame?.streams) return;
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.streams) return;
 
-  const streams = room.currentGame.streams;
-  const gameType = room.currentGame.type;
-  const isKrukkurin = gameType === "krukkurin";
+  const streams = cg.streams;
+  const isKrukkurin = cg.type === "krukkurin";
   const cardsNeeded = isKrukkurin ? 2 : 1;
-
   const nextIdx = streams.currentCardIdx + cardsNeeded;
   if (nextIdx >= streams.deck.length) return;
-
-  const updates: Record<string, unknown> = {};
 
   if (isKrukkurin) {
     const num1 = streams.deck[streams.currentCardIdx + 1];
     const num2 = streams.deck[streams.currentCardIdx + 2];
     const color1 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
     const color2 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
-
     const card = {
-      number: num1,
-      points: 0,
-      items: [
-        { number: num1, color: color1 },
-        { number: num2, color: color2 },
-      ],
+      number: num1, points: 0,
+      items: [{ number: num1, color: color1 }, { number: num2, color: color2 }],
       flippedAt: Date.now(),
     };
-
-    updates["currentGame/streams/currentCardIdx"] = nextIdx;
-    updates["currentGame/streams/currentCard"] = card;
-
-    const history = streams.history || [];
-    updates["currentGame/streams/history"] = [...history, card];
-
-    // 全員の acted をリセット
-    if (room.currentGame.boards) {
-      Object.entries(room.currentGame.boards).forEach(([pid, board]) => {
-        if (!board.eliminated && !board.completed) {
-          updates[`currentGame/boards/${pid}/acted`] = false;
-        }
-      });
-    }
+    streams.currentCardIdx = nextIdx;
+    streams.currentCard = card;
+    streams.history = [...(streams.history || []), card];
   } else {
-    // meta_streams
     const number = streams.deck[streams.currentCardIdx + 1];
     const points = Math.floor(Math.random() * 18) + 1;
     const card = { number, points, flippedAt: Date.now() };
-
-    updates["currentGame/streams/currentCardIdx"] = nextIdx;
-    updates["currentGame/streams/currentCard"] = card;
-
-    const history = streams.history || [];
-    updates["currentGame/streams/history"] = [...history, card];
-
-    if (room.currentGame.boards) {
-      Object.entries(room.currentGame.boards).forEach(([pid, board]) => {
-        if (!board.eliminated && !board.completed) {
-          updates[`currentGame/boards/${pid}/acted`] = false;
-        }
-      });
-    }
+    streams.currentCardIdx = nextIdx;
+    streams.currentCard = card;
+    streams.history = [...(streams.history || []), card];
   }
 
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, updates);
+  // 全員の acted をリセット
+  if (cg.boards) {
+    Object.entries(cg.boards).forEach(([, board]) => {
+      if (!board.eliminated && !board.completed) {
+        board.acted = false;
+      }
+    });
+  }
+
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
 }
 
-// 最後の生存者ボーナス（+10pt）
 function applyLastSurvivorBonus(
   boards: Record<string, PlayerBoard>,
   leavingPlayerId: string,
-  updates: Record<string, unknown>,
-): void {
+): Record<string, PlayerBoard> {
   const active = Object.entries(boards).filter(
     ([pid, b]) => pid !== leavingPlayerId && !b.eliminated && !b.completed,
   );
   if (active.length === 1) {
     const [survivorId, survivorBoard] = active[0];
-    updates[`currentGame/boards/${survivorId}/score`] = survivorBoard.score + 10;
-    updates[`currentGame/boards/${survivorId}/completed`] = true;
+    boards[survivorId] = { ...survivorBoard, score: survivorBoard.score + 10, completed: true };
   }
+  return boards;
 }
 
-// カードを配置
 export async function placeCard(
   roomId: string,
   playerId: string,
   rowIndex: number,
   slotIndex: number,
-  itemIndex?: number,  // くるっくりん用: 配置するアイテム (0 or 1)
+  itemIndex?: number,
 ): Promise<{ success: boolean; error?: string }> {
-  const room = await getRoom(roomId);
-  if (!room?.currentGame?.streams?.currentCard || !room.currentGame.boards) {
-    return { success: false, error: "ゲーム状態が無効です" };
-  }
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return { success: false, error: "ゲーム状態が無効です" };
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.streams?.currentCard || !cg.boards) return { success: false, error: "ゲーム状態が無効です" };
 
-  const board = room.currentGame.boards[playerId];
+  const board = cg.boards[playerId];
   if (!board) return { success: false, error: "ボードが見つかりません" };
   if (board.eliminated) return { success: false, error: "脱落済みです" };
   if (board.acted) return { success: false, error: "既にアクション済みです" };
 
-  const card = room.currentGame.streams.currentCard;
-  const gameType = room.currentGame.type;
-  const isKrukkurin = gameType === "krukkurin";
+  const card = cg.streams.currentCard;
+  const isKrukkurin = cg.type === "krukkurin";
   const rows = board.rows;
 
-  // バリデーション: 指定マスが空か
-  if (!rows[rowIndex] || rows[rowIndex][slotIndex] === undefined) {
-    return { success: false, error: "無効なマス位置です" };
-  }
-  if (rows[rowIndex][slotIndex] !== 0) {
-    return { success: false, error: "そのマスは空いていません" };
-  }
+  if (!rows[rowIndex] || rows[rowIndex][slotIndex] === undefined) return { success: false, error: "無効なマス位置です" };
+  if (rows[rowIndex][slotIndex] !== 0) return { success: false, error: "そのマスは空いていません" };
 
-  // 配置する数字を決定
   let placeNumber: number;
   let placeColor = "";
 
   if (isKrukkurin) {
-    if (itemIndex === undefined || !card.items?.[itemIndex]) {
-      return { success: false, error: "無効なアイテムです" };
-    }
+    if (itemIndex === undefined || !card.items?.[itemIndex]) return { success: false, error: "無効なアイテムです" };
     placeNumber = card.items[itemIndex].number;
     placeColor = card.items[itemIndex].color;
   } else {
@@ -1127,85 +1362,82 @@ export async function placeCard(
   // 昇順バリデーション
   const row = rows[rowIndex];
   let leftVal = 0;
-  for (let i = slotIndex - 1; i >= 0; i--) {
-    if (row[i] !== 0) { leftVal = row[i]; break; }
-  }
-  if (leftVal !== 0 && leftVal > placeNumber) {
-    return { success: false, error: "昇順ルール違反です（左の値より小さい）" };
-  }
+  for (let i = slotIndex - 1; i >= 0; i--) { if (row[i] !== 0) { leftVal = row[i]; break; } }
+  if (leftVal !== 0 && leftVal > placeNumber) return { success: false, error: "昇順ルール違反です（左の値より小さい）" };
   let rightVal = 0;
-  for (let i = slotIndex + 1; i < row.length; i++) {
-    if (row[i] !== 0) { rightVal = row[i]; break; }
-  }
-  if (rightVal !== 0 && rightVal < placeNumber) {
-    return { success: false, error: "昇順ルール違反です（右の値より大きい）" };
-  }
+  for (let i = slotIndex + 1; i < row.length; i++) { if (row[i] !== 0) { rightVal = row[i]; break; } }
+  if (rightVal !== 0 && rightVal < placeNumber) return { success: false, error: "昇順ルール違反です（右の値より大きい）" };
 
   // 配置実行
-  const newRows = rows.map((r) => [...r]);
+  const newRows = rows.map(r => [...r]);
   newRows[rowIndex][slotIndex] = placeNumber;
-  const allFilled = newRows.every((r) => r.every((v) => v !== 0));
+  const allFilled = newRows.every(r => r.every(v => v !== 0));
 
-  const updates: Record<string, unknown> = {
-    [`currentGame/boards/${playerId}/rows`]: newRows,
-    [`currentGame/boards/${playerId}/completed`]: allFilled,
-  };
+  board.rows = newRows;
+  board.completed = allFilled;
+  board.acted = true;
 
   if (isKrukkurin) {
-    // 色配置 + スコア再計算
-    const newColors = (board.colors || createEmptyColors(gameType)).map((r: string[]) => [...r]);
+    const newColors = (board.colors || createEmptyColors(cg.type)).map((r: string[]) => [...r]);
     newColors[rowIndex][slotIndex] = placeColor;
-    const colorScore = calculateColorScore(newRows, newColors);
-    updates[`currentGame/boards/${playerId}/colors`] = newColors;
-    updates[`currentGame/boards/${playerId}/score`] = colorScore - board.passCount;
-    updates[`currentGame/boards/${playerId}/acted`] = true;
+    board.colors = newColors;
+    board.score = calculateColorScore(newRows, newColors) - board.passCount;
   } else {
-    // meta_streams: 従来のポイント加算
-    updates[`currentGame/boards/${playerId}/score`] = board.score + card.points;
-    updates[`currentGame/boards/${playerId}/acted`] = true;
+    board.score = board.score + card.points;
   }
 
   if (allFilled) {
-    applyLastSurvivorBonus(room.currentGame.boards, playerId, updates);
+    applyLastSurvivorBonus(cg.boards, playerId);
   }
 
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, updates);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
   return { success: true };
 }
 
-// パスする
 export async function passCard(
   roomId: string,
   playerId: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const room = await getRoom(roomId);
-  if (!room?.currentGame?.boards) {
-    return { success: false, error: "ゲーム状態が無効です" };
-  }
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return { success: false, error: "ゲーム状態が無効です" };
+  const cg = parseJson<CurrentGame>(doc.currentGame as string);
+  if (!cg?.boards) return { success: false, error: "ゲーム状態が無効です" };
 
-  const board = room.currentGame.boards[playerId];
+  const board = cg.boards[playerId];
   if (!board) return { success: false, error: "ボードが見つかりません" };
   if (board.eliminated) return { success: false, error: "脱落済みです" };
   if (board.acted) return { success: false, error: "既にアクション済みです" };
 
-  const gameType = room.currentGame.type;
-  const isKrukkurin = gameType === "krukkurin";
-  const newPassCount = board.passCount + 1;
-  const isEliminated = newPassCount >= 4;
+  board.passCount += 1;
+  board.score -= 1;
+  board.acted = true;
+  board.eliminated = board.passCount >= 4;
 
-  const updates: Record<string, unknown> = {
-    [`currentGame/boards/${playerId}/passCount`]: newPassCount,
-    [`currentGame/boards/${playerId}/score`]: board.score - 1,
-    [`currentGame/boards/${playerId}/acted`]: true,
-    [`currentGame/boards/${playerId}/eliminated`]: isEliminated,
-  };
-
-  if (isEliminated) {
-    applyLastSurvivorBonus(room.currentGame.boards, playerId, updates);
+  if (board.eliminated) {
+    applyLastSurvivorBonus(cg.boards, playerId);
   }
 
-  const roomRef = ref(getDb(), `rooms/${roomId}`);
-  await update(roomRef, updates);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    currentGame: toJson(cg),
+  });
   return { success: true };
+}
+
+// ===== ゲーム回答送信（GameQuestion.tsx から移動） =====
+
+export async function submitAnswer(
+  roomId: string,
+  questionId: string,
+  playerId: string,
+  text: string,
+): Promise<void> {
+  await getDatabases().createDocument(DATABASE_ID, COLLECTION_ANSWERS, ID.unique(), {
+    roomId,
+    questionId,
+    playerId,
+    text,
+    submittedAt: Date.now(),
+  });
 }

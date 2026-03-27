@@ -16,7 +16,7 @@ import {
   publishTables,
 } from "@/lib/room";
 import { Room, Player, EntryField } from "@/types/room";
-import { ensureAnonymousUser } from "@/lib/firebase";
+import { ensureAnonymousUser } from "@/lib/appwrite";
 import RoomInfoPanel from "@/components/admin/RoomInfoPanel";
 import ScenarioPanel from "@/components/admin/ScenarioPanel";
 import PlayersPanel from "@/components/admin/PlayersPanel";
