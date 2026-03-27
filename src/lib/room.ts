@@ -64,34 +64,71 @@ function docToPlayer(doc: Record<string, unknown>): Player {
   };
 }
 
+// RoomData: dataフィールドに格納する型（players, answers除く）
+interface RoomData {
+  config: RoomConfig;
+  state: RoomState;
+  scenario?: { steps: ScenarioStep[] };
+  currentGame?: CurrentGame;
+  messages?: Record<string, AdminMessage>;
+  gameResults?: Record<string, GameResult>;
+  stepResponses?: Record<string, Record<string, StepResponse>>;
+  stepReveals?: Record<string, StepInputReveal>;
+  revealVisibility?: Record<string, Record<string, boolean>>;
+  publishedTables?: { assignments: Record<string, number>; pushedAt: number };
+  publishHistory?: Record<string, { pushedAt: number; assignments: Record<string, number> }>;
+}
+
+// ドキュメントからRoomDataをパース
+function parseRoomData(doc: Record<string, unknown>): RoomData | null {
+  const data = parseJson<RoomData>(doc.data as string);
+  if (!data) return null;
+  if (doc.creatorUid) data.config.creatorUid = doc.creatorUid as string;
+  return data;
+}
+
 // Room ドキュメント + players + answers → Room オブジェクト組み立て
 function assembleRoom(
   doc: Record<string, unknown>,
   players: Record<string, Player>,
   answers: Record<string, Record<string, Answer>>,
 ): Room {
-  const config = parseJson<RoomConfig>(doc.config as string)!;
-  if (doc.creatorUid) config.creatorUid = doc.creatorUid as string;
+  const data = parseRoomData(doc)!;
 
-  let currentGame = parseJson<CurrentGame>(doc.currentGame as string);
+  let currentGame = data.currentGame;
   if (currentGame && Object.keys(answers).length > 0) {
     currentGame = { ...currentGame, answers };
   }
 
   return {
-    config,
-    state: parseJson<RoomState>(doc.state as string)!,
-    scenario: parseJson(doc.scenario as string),
+    config: data.config,
+    state: data.state,
+    scenario: data.scenario,
     players: Object.keys(players).length > 0 ? players : undefined,
     currentGame,
-    messages: parseJson(doc.messages as string),
-    gameResults: parseJson(doc.gameResults as string),
-    stepResponses: parseJson(doc.stepResponses as string),
-    stepReveals: parseJson(doc.stepReveals as string),
-    revealVisibility: parseJson(doc.revealVisibility as string),
-    publishedTables: parseJson(doc.publishedTables as string),
-    publishHistory: parseJson(doc.publishHistory as string),
+    messages: data.messages,
+    gameResults: data.gameResults,
+    stepResponses: data.stepResponses,
+    stepReveals: data.stepReveals,
+    revealVisibility: data.revealVisibility,
+    publishedTables: data.publishedTables,
+    publishHistory: data.publishHistory,
   };
+}
+
+// RoomDataを読み取って更新するヘルパー
+async function updateRoomData(
+  roomId: string,
+  updater: (data: RoomData) => void,
+): Promise<void> {
+  const doc = await getRoomDoc(roomId);
+  if (!doc) return;
+  const data = parseRoomData(doc);
+  if (!data) return;
+  updater(data);
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
+    data: toJson(data),
+  });
 }
 
 // Room ドキュメントだけ取得（内部用）
@@ -192,19 +229,15 @@ export async function createRoom(
     stepTimestamps: { s0: Date.now() },
   };
 
+  const roomData: RoomData = {
+    config,
+    state,
+    scenario: { steps: DEFAULT_SCENARIO_STEPS },
+  };
+
   await getDatabases().createDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
     creatorUid: creatorUid || "",
-    config: toJson(config),
-    state: toJson(state),
-    scenario: toJson({ steps: DEFAULT_SCENARIO_STEPS }),
-    currentGame: "",
-    messages: "",
-    gameResults: "",
-    stepResponses: "",
-    stepReveals: "",
-    revealVisibility: "",
-    publishedTables: "",
-    publishHistory: "",
+    data: toJson(roomData),
   });
 
   return roomId;
@@ -231,11 +264,9 @@ export async function getRoomsByCreator(uid: string): Promise<{ id: string; room
   return res.documents
     .map(doc => {
       const d = doc as unknown as Record<string, unknown>;
-      const config = parseJson<RoomConfig>(d.config as string);
-      const state = parseJson<RoomState>(d.state as string);
-      if (!config || !state) return null;
-      if (d.creatorUid) config.creatorUid = d.creatorUid as string;
-      return { id: doc.$id, room: { config, state } as Room };
+      const data = parseRoomData(d);
+      if (!data) return null;
+      return { id: doc.$id, room: { config: data.config, state: data.state } as Room };
     })
     .filter((r): r is { id: string; room: Room } => r !== null)
     .sort((a, b) => b.room.config.createdAt - a.room.config.createdAt);
@@ -409,12 +440,15 @@ export function subscribeToMessages(
     `databases.${DATABASE_ID}.collections.${COLLECTION_ROOMS}.documents.${roomId}`,
     (event) => {
       const doc = event.payload as unknown as Record<string, unknown>;
-      callback(parseJson<Record<string, AdminMessage>>(doc.messages as string) || null);
+      const data = parseRoomData(doc);
+      callback(data?.messages || null);
     },
   );
 
   getRoomDoc(roomId).then(doc => {
-    callback(doc ? parseJson<Record<string, AdminMessage>>(doc.messages as string) || null : null);
+    if (!doc) { callback(null); return; }
+    const data = parseRoomData(doc);
+    callback(data?.messages || null);
   });
 
   return unsub;
@@ -433,15 +467,15 @@ export function subscribeToStepResponses(
     `databases.${DATABASE_ID}.collections.${COLLECTION_ROOMS}.documents.${roomId}`,
     (event) => {
       const doc = event.payload as unknown as Record<string, unknown>;
-      const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string);
-      callback(all?.[key] || null);
+      const data = parseRoomData(doc);
+      callback(data?.stepResponses?.[key] || null);
     },
   );
 
   getRoomDoc(roomId).then(doc => {
     if (!doc) { callback(null); return; }
-    const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string);
-    callback(all?.[key] || null);
+    const data = parseRoomData(doc);
+    callback(data?.stepResponses?.[key] || null);
   });
 
   return unsub;
@@ -450,29 +484,21 @@ export function subscribeToStepResponses(
 // ===== 台本操作 =====
 
 export async function updateScenario(roomId: string, steps: ScenarioStep[]): Promise<void> {
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    scenario: toJson({ steps }),
-  });
+  await updateRoomData(roomId, d => { d.scenario = { steps }; });
 }
 
 export async function addScenarioStep(roomId: string, step: ScenarioStep): Promise<void> {
-  const room = await getRoom(roomId);
-  if (!room) return;
-  const steps = room.scenario?.steps || [];
-  steps.push(step);
-  await updateScenario(roomId, steps);
+  await updateRoomData(roomId, d => {
+    const steps = d.scenario?.steps || [];
+    steps.push(step);
+    d.scenario = { steps };
+  });
 }
 
 // ===== ステート更新 =====
 
 export async function updateRoomState(roomId: string, state: Partial<RoomState>): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const current = parseJson<RoomState>(doc.state as string)!;
-  const merged = { ...current, ...state };
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    state: toJson(merged),
-  });
+  await updateRoomData(roomId, d => { d.state = { ...d.state, ...state }; });
 }
 
 // 次のステップへ
@@ -485,39 +511,20 @@ export async function goToNextStep(roomId: string): Promise<void> {
   if (currentStep >= totalSteps - 1) return;
 
   const nextStep = currentStep + 1;
-  const newState: RoomState = {
-    ...room.state,
-    currentStep: nextStep,
-    phase: "waiting",
-    stepTimestamps: { ...room.state.stepTimestamps, [`s${nextStep}`]: Date.now() },
-  };
 
-  const updates: Record<string, string> = {
-    state: toJson(newState),
-    currentGame: "",
-  };
-
-  // ゲーム結果の自動保存
+  // ゲーム結果の計算（answersが必要なので先にやる）
+  let gameResult: GameResult | undefined;
   const currentStepDef = room.scenario?.steps?.[currentStep];
   if (currentStepDef && (currentStepDef.type === "table_game" || currentStepDef.type === "whole_game") && room.currentGame) {
     const cg = room.currentGame;
     const isStreamsGame = cg.type === "krukkurin" || cg.type === "meta_streams";
 
-    let gameResult: GameResult;
     if (isStreamsGame) {
       const scores: Record<string, number> = {};
       if (cg.boards) {
-        Object.entries(cg.boards).forEach(([pid, board]) => {
-          scores[pid] = board.score || 0;
-        });
+        Object.entries(cg.boards).forEach(([pid, board]) => { scores[pid] = board.score || 0; });
       }
-      gameResult = {
-        type: cg.type, scope: cg.scope,
-        questions: {}, answers: {},
-        scores, completedAt: Date.now(),
-        streamsHistory: cg.streams?.history || [],
-        boards: cg.boards || {},
-      };
+      gameResult = { type: cg.type, scope: cg.scope, questions: {}, answers: {}, scores, completedAt: Date.now(), streamsHistory: cg.streams?.history || [], boards: cg.boards || {} };
     } else {
       const { calculateTotalScores } = await import("./scoring");
       let scores: Record<string, number>;
@@ -527,44 +534,32 @@ export async function goToNextStep(roomId: string): Promise<void> {
         scores = {};
         for (const tNum of tableNumbers) {
           const tableScores = calculateTotalScores(cg.type, cg.answers || {}, "table", tNum, assignments);
-          Object.entries(tableScores).forEach(([pid, score]) => {
-            scores[pid] = (scores[pid] || 0) + score;
-          });
+          Object.entries(tableScores).forEach(([pid, score]) => { scores[pid] = (scores[pid] || 0) + score; });
         }
       } else {
         scores = calculateTotalScores(cg.type, cg.answers || {}, cg.scope);
       }
-      gameResult = {
-        type: cg.type, scope: cg.scope,
-        questions: cg.questions || {}, answers: cg.answers || {},
-        scores, completedAt: Date.now(),
-      };
+      gameResult = { type: cg.type, scope: cg.scope, questions: cg.questions || {}, answers: cg.answers || {}, scores, completedAt: Date.now() };
     }
-
-    const currentResults = room.gameResults || {};
-    currentResults[String(currentStep)] = gameResult;
-    updates.gameResults = toJson(currentResults);
   }
 
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, updates);
-  // 回答コレクションもクリア
+  await updateRoomData(roomId, d => {
+    d.state = { ...d.state, currentStep: nextStep, phase: "waiting", stepTimestamps: { ...d.state.stepTimestamps, [`s${nextStep}`]: Date.now() } };
+    d.currentGame = undefined;
+    if (gameResult) {
+      if (!d.gameResults) d.gameResults = {};
+      d.gameResults[String(currentStep)] = gameResult;
+    }
+  });
   await deleteAllInCollection(COLLECTION_ANSWERS, roomId);
 }
 
 // 前のステップへ
 export async function goToPrevStep(roomId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const state = parseJson<RoomState>(doc.state as string)!;
-  if (state.currentStep <= 0) return;
-
-  const prevStep = state.currentStep - 1;
-  state.currentStep = prevStep;
-  state.phase = "waiting";
-  state.stepTimestamps = { ...state.stepTimestamps, [`s${prevStep}`]: Date.now() };
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    state: toJson(state),
+  await updateRoomData(roomId, d => {
+    if (d.state.currentStep <= 0) return;
+    const prevStep = d.state.currentStep - 1;
+    d.state = { ...d.state, currentStep: prevStep, phase: "waiting", stepTimestamps: { ...d.state.stepTimestamps, [`s${prevStep}`]: Date.now() } };
   });
 }
 
@@ -574,81 +569,40 @@ export async function setPhase(roomId: string, phase: Phase): Promise<void> {
 
 // ===== ゲーム操作 =====
 
-export async function startGame(
-  roomId: string,
-  gameType: GameType,
-  scope: "table" | "whole",
-  autoProgress: boolean,
-  anonymousMode?: boolean,
-): Promise<void> {
-  const game: CurrentGame = {
-    type: gameType, scope, autoProgress,
-    anonymousMode: anonymousMode || undefined,
-  };
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(game),
+export async function startGame(roomId: string, gameType: GameType, scope: "table" | "whole", autoProgress: boolean, anonymousMode?: boolean): Promise<void> {
+  await updateRoomData(roomId, d => {
+    d.currentGame = { type: gameType, scope, autoProgress, anonymousMode: anonymousMode || undefined };
+    d.state = { ...d.state, phase: "playing" };
   });
-  await setPhase(roomId, "playing");
 }
 
 export async function advanceTableProgress(roomId: string, tableKey: string, nextIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg) return;
-  if (!cg.tableProgress) cg.tableProgress = {};
-  cg.tableProgress[tableKey] = nextIndex;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame) return;
+    if (!d.currentGame.tableProgress) d.currentGame.tableProgress = {};
+    d.currentGame.tableProgress[tableKey] = nextIndex;
   });
 }
 
 export async function advanceGameProgress(roomId: string, nextIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg) return;
-  cg.currentQuestionIdx = nextIndex;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
-  });
+  await updateRoomData(roomId, d => { if (d.currentGame) d.currentGame.currentQuestionIdx = nextIndex; });
 }
 
-export async function startGameWithAutoProgress(
-  roomId: string,
-  gameType: GameType,
-  presetQuestions: GameQuestionConfig[],
-  anonymousMode?: boolean,
-): Promise<void> {
+export async function startGameWithAutoProgress(roomId: string, gameType: GameType, presetQuestions: GameQuestionConfig[], anonymousMode?: boolean): Promise<void> {
   const questions: Record<string, Question> = {};
   const questionOrder: string[] = [];
   const now = Date.now();
-
   presetQuestions.forEach((pq, i) => {
     const qId = `q_${now}_${i}`;
-    const q: Question = {
-      text: pq.text, timeLimit: 0, status: "open",
-      inputType: pq.inputType, sentAt: now + i,
-    };
-    if (pq.inputType === "select" && pq.options) {
-      q.options = pq.options.filter(o => o.trim());
-    }
+    const q: Question = { text: pq.text, timeLimit: 0, status: "open", inputType: pq.inputType, sentAt: now + i };
+    if (pq.inputType === "select" && pq.options) q.options = pq.options.filter(o => o.trim());
     questions[qId] = q;
     questionOrder.push(qId);
   });
-
-  const game: CurrentGame = {
-    type: gameType, scope: "table", autoProgress: true,
-    anonymousMode: anonymousMode || undefined,
-    questions, questionOrder, tableProgress: {},
-    activeQuestionId: questionOrder[0],
-    sentQuestionIndices: presetQuestions.map((_, i) => i),
-  };
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(game),
+  await updateRoomData(roomId, d => {
+    d.currentGame = { type: gameType, scope: "table", autoProgress: true, anonymousMode: anonymousMode || undefined, questions, questionOrder, tableProgress: {}, activeQuestionId: questionOrder[0], sentQuestionIndices: presetQuestions.map((_, i) => i) };
+    d.state = { ...d.state, phase: "playing" };
   });
-  await setPhase(roomId, "playing");
 }
 
 export async function checkAndAdvanceTable(
@@ -683,181 +637,97 @@ export async function checkAndAdvanceTable(
 }
 
 export async function forceAdvanceTable(roomId: string, tableNumber: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.questionOrder) return;
-
-  const tableKey = `table_${tableNumber}`;
-  const currentIdx = cg.tableProgress?.[tableKey] ?? 0;
-  if (currentIdx < cg.questionOrder.length) {
-    if (!cg.tableProgress) cg.tableProgress = {};
-    cg.tableProgress[tableKey] = currentIdx + 1;
-    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-      currentGame: toJson(cg),
-    });
-  }
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame?.questionOrder) return;
+    const tableKey = `table_${tableNumber}`;
+    const currentIdx = d.currentGame.tableProgress?.[tableKey] ?? 0;
+    if (currentIdx < d.currentGame.questionOrder.length) {
+      if (!d.currentGame.tableProgress) d.currentGame.tableProgress = {};
+      d.currentGame.tableProgress[tableKey] = currentIdx + 1;
+    }
+  });
 }
 
 export async function forceAdvanceAllTables(roomId: string, targetIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.questionOrder) return;
-
-  const config = parseJson<RoomConfig>(doc.config as string)!;
-  let changed = false;
-  if (!cg.tableProgress) cg.tableProgress = {};
-  for (let t = 1; t <= config.tableCount; t++) {
-    const tableKey = `table_${t}`;
-    const currentIdx = cg.tableProgress[tableKey] ?? 0;
-    if (currentIdx < targetIndex) {
-      cg.tableProgress[tableKey] = targetIndex;
-      changed = true;
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame?.questionOrder) return;
+    if (!d.currentGame.tableProgress) d.currentGame.tableProgress = {};
+    for (let t = 1; t <= d.config.tableCount; t++) {
+      const tableKey = `table_${t}`;
+      const currentIdx = d.currentGame.tableProgress[tableKey] ?? 0;
+      if (currentIdx < targetIndex) d.currentGame.tableProgress[tableKey] = targetIndex;
     }
-  }
-  if (changed) {
-    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-      currentGame: toJson(cg),
-    });
-  }
+  });
 }
 
 // ===== お題操作 =====
 
-export async function sendQuestion(
-  roomId: string,
-  text: string,
-  inputType: "text" | "number" | "select" = "text",
-  options?: string[],
-  presetIndex?: number,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string) || {} as CurrentGame;
-  const questionId = `q_${Date.now()}`;
-
-  const question: Question = inputType === "select" && options
-    ? { text, timeLimit: 0, status: "open", inputType, options, sentAt: Date.now() }
-    : { text, timeLimit: 0, status: "open", inputType, sentAt: Date.now() };
-
-  if (!cg.questions) cg.questions = {};
-  cg.questions[questionId] = question;
-  cg.activeQuestionId = questionId;
-
-  if (presetIndex !== undefined) {
-    const currentSent = cg.sentQuestionIndices || [];
-    if (!currentSent.includes(presetIndex)) {
-      cg.sentQuestionIndices = [...currentSent, presetIndex];
+export async function sendQuestion(roomId: string, text: string, inputType: "text" | "number" | "select" = "text", options?: string[], presetIndex?: number): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame) d.currentGame = {} as CurrentGame;
+    const questionId = `q_${Date.now()}`;
+    const question: Question = inputType === "select" && options
+      ? { text, timeLimit: 0, status: "open", inputType, options, sentAt: Date.now() }
+      : { text, timeLimit: 0, status: "open", inputType, sentAt: Date.now() };
+    if (!d.currentGame.questions) d.currentGame.questions = {};
+    d.currentGame.questions[questionId] = question;
+    d.currentGame.activeQuestionId = questionId;
+    if (presetIndex !== undefined) {
+      const currentSent = d.currentGame.sentQuestionIndices || [];
+      if (!currentSent.includes(presetIndex)) d.currentGame.sentQuestionIndices = [...currentSent, presetIndex];
     }
-  }
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
   });
 }
 
 export async function reopenQuestion(roomId: string, questionId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.questions?.[questionId]) return;
-  cg.questions[questionId].status = "open";
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
-  });
+  await updateRoomData(roomId, d => { if (d.currentGame?.questions?.[questionId]) d.currentGame.questions[questionId].status = "open"; });
 }
 
 export async function hideAnswers(roomId: string, questionId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.questions?.[questionId]) return;
-  cg.questions[questionId].status = "closed";
-  delete cg.questions[questionId].revealScope;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame?.questions?.[questionId]) return;
+    d.currentGame.questions[questionId].status = "closed";
+    delete d.currentGame.questions[questionId].revealScope;
   });
 }
 
 export async function closeQuestion(roomId: string, questionId?: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg) return;
-  const targetId = questionId || cg.activeQuestionId;
-  if (!targetId || !cg.questions?.[targetId]) return;
-  cg.questions[targetId].status = "closed";
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame) return;
+    const targetId = questionId || d.currentGame.activeQuestionId;
+    if (targetId && d.currentGame.questions?.[targetId]) d.currentGame.questions[targetId].status = "closed";
   });
 }
 
-export async function revealAnswers(
-  roomId: string,
-  questionId?: string,
-  revealScope?: AnswerRevealScope,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg) return;
-  const targetId = questionId || cg.activeQuestionId;
-  if (!targetId || !cg.questions?.[targetId]) return;
-  cg.questions[targetId].status = "revealed";
-  if (revealScope) cg.questions[targetId].revealScope = revealScope;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
+export async function revealAnswers(roomId: string, questionId?: string, revealScope?: AnswerRevealScope): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.currentGame) return;
+    const targetId = questionId || d.currentGame.activeQuestionId;
+    if (!targetId || !d.currentGame.questions?.[targetId]) return;
+    d.currentGame.questions[targetId].status = "revealed";
+    if (revealScope) d.currentGame.questions[targetId].revealScope = revealScope;
   });
 }
 
 export async function resetCurrentGame(roomId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (cg) {
-    delete cg.questions;
-    delete cg.answers;
-    delete cg.activeQuestionId;
-    delete cg.sentQuestionIndices;
-    await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-      currentGame: toJson(cg),
-    });
-  }
+  await updateRoomData(roomId, d => {
+    if (d.currentGame) { delete d.currentGame.questions; delete d.currentGame.answers; delete d.currentGame.activeQuestionId; delete d.currentGame.sentQuestionIndices; }
+  });
   await deleteAllInCollection(COLLECTION_ANSWERS, roomId);
 }
 
 export async function toggleScoreboard(roomId: string, show: boolean): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg) return;
-  cg.showScoreboard = show || undefined;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
-  });
+  await updateRoomData(roomId, d => { if (d.currentGame) d.currentGame.showScoreboard = show || undefined; });
 }
 
 export async function saveGameResult(roomId: string, stepIndex: number, gameResult: GameResult): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const results = parseJson<Record<string, GameResult>>(doc.gameResults as string) || {};
-  results[String(stepIndex)] = gameResult;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    gameResults: toJson(results),
-  });
+  await updateRoomData(roomId, d => { if (!d.gameResults) d.gameResults = {}; d.gameResults[String(stepIndex)] = gameResult; });
 }
 
 // ===== 設定更新 =====
 
 async function updateConfig(roomId: string, updater: (config: RoomConfig) => void): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const config = parseJson<RoomConfig>(doc.config as string)!;
-  updater(config);
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    config: toJson(config),
-  });
+  await updateRoomData(roomId, d => { updater(d.config); });
 }
 
 export async function updateTableCount(roomId: string, count: number): Promise<void> {
@@ -921,130 +791,63 @@ export async function removePlayer(roomId: string, playerId: string): Promise<vo
 
 // ===== メッセージ =====
 
-export async function sendAdminMessage(
-  roomId: string,
-  text: string,
-  target: MessageTarget,
-  currentStep: number,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const messages = parseJson<Record<string, AdminMessage>>(doc.messages as string) || {};
-  const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  messages[msgId] = { id: msgId, text, target, sentAt: Date.now(), sentDuringStep: currentStep };
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    messages: toJson(messages),
+export async function sendAdminMessage(roomId: string, text: string, target: MessageTarget, currentStep: number): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.messages) d.messages = {};
+    const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    d.messages[msgId] = { id: msgId, text, target, sentAt: Date.now(), sentDuringStep: currentStep };
   });
 }
 
 // ===== ステップ回答 =====
 
-export async function submitStepResponse(
-  roomId: string,
-  stepIndex: number,
-  playerId: string,
-  value: string | number,
-  playerName: string,
-  tableNumber: number,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
-  const key = String(stepIndex);
-  if (!all[key]) all[key] = {};
-  all[key][playerId] = { value, submittedAt: Date.now(), playerName, tableNumber };
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    stepResponses: toJson(all),
+export async function submitStepResponse(roomId: string, stepIndex: number, playerId: string, value: string | number, playerName: string, tableNumber: number): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.stepResponses) d.stepResponses = {};
+    const key = String(stepIndex);
+    if (!d.stepResponses[key]) d.stepResponses[key] = {};
+    d.stepResponses[key][playerId] = { value, submittedAt: Date.now(), playerName, tableNumber };
   });
 }
 
 export async function setStepReveal(roomId: string, stepIndex: number, reveal: StepInputReveal): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const all = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
-  all[String(stepIndex)] = reveal;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    stepReveals: toJson(all),
-  });
+  await updateRoomData(roomId, d => { if (!d.stepReveals) d.stepReveals = {}; d.stepReveals[String(stepIndex)] = reveal; });
 }
 
 export async function clearStepReveal(roomId: string, stepIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const all = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
-  delete all[String(stepIndex)];
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    stepReveals: toJson(all),
-  });
+  await updateRoomData(roomId, d => { if (d.stepReveals) delete d.stepReveals[String(stepIndex)]; });
 }
 
 export async function resetStepResponses(roomId: string, stepIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const all = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
-  delete all[String(stepIndex)];
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    stepResponses: toJson(all),
-  });
+  await updateRoomData(roomId, d => { if (d.stepResponses) delete d.stepResponses[String(stepIndex)]; });
 }
 
 export async function resetStepAll(roomId: string, stepIndex: number): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const responses = parseJson<Record<string, Record<string, StepResponse>>>(doc.stepResponses as string) || {};
-  const reveals = parseJson<Record<string, StepInputReveal>>(doc.stepReveals as string) || {};
-  delete responses[String(stepIndex)];
-  delete reveals[String(stepIndex)];
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    stepResponses: toJson(responses),
-    stepReveals: toJson(reveals),
+  await updateRoomData(roomId, d => {
+    if (d.stepResponses) delete d.stepResponses[String(stepIndex)];
+    if (d.stepReveals) delete d.stepReveals[String(stepIndex)];
   });
 }
 
-export async function setRevealQuestionVisibility(
-  roomId: string,
-  stepIndex: number,
-  questionId: string,
-  visible: boolean,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const all = parseJson<Record<string, Record<string, boolean>>>(doc.revealVisibility as string) || {};
-  if (!all[String(stepIndex)]) all[String(stepIndex)] = {};
-  all[String(stepIndex)][questionId] = visible;
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    revealVisibility: toJson(all),
+export async function setRevealQuestionVisibility(roomId: string, stepIndex: number, questionId: string, visible: boolean): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.revealVisibility) d.revealVisibility = {};
+    if (!d.revealVisibility[String(stepIndex)]) d.revealVisibility[String(stepIndex)] = {};
+    d.revealVisibility[String(stepIndex)][questionId] = visible;
   });
 }
 
 // ===== ステップ割り込み =====
 
-export async function insertStepAfterCurrent(
-  roomId: string,
-  newStep: ScenarioStep,
-  autoAdvance: boolean,
-): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const state = parseJson<RoomState>(doc.state as string)!;
-  const scenario = parseJson<{ steps: ScenarioStep[] }>(doc.scenario as string);
-  if (!scenario) return;
-
-  const currentStep = state.currentStep;
-  scenario.steps.splice(currentStep + 1, 0, newStep);
-
-  const updates: Record<string, string> = {
-    scenario: toJson(scenario),
-  };
-
-  if (autoAdvance) {
-    state.currentStep = currentStep + 1;
-    state.phase = "waiting";
-    state.stepTimestamps = { ...state.stepTimestamps, [`s${currentStep + 1}`]: Date.now() };
-    updates.state = toJson(state);
-  }
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, updates);
+export async function insertStepAfterCurrent(roomId: string, newStep: ScenarioStep, autoAdvance: boolean): Promise<void> {
+  await updateRoomData(roomId, d => {
+    if (!d.scenario) return;
+    const currentStep = d.state.currentStep;
+    d.scenario.steps.splice(currentStep + 1, 0, newStep);
+    if (autoAdvance) {
+      d.state = { ...d.state, currentStep: currentStep + 1, phase: "waiting", stepTimestamps: { ...d.state.stepTimestamps, [`s${currentStep + 1}`]: Date.now() } };
+    }
+  });
 }
 
 // ===== プレゼンス =====
@@ -1081,24 +884,15 @@ export function registerPresence(roomId: string, playerId: string): () => void {
 // ===== テーブル操作 =====
 
 export async function publishTables(roomId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
   const players = await fetchPlayers(roomId);
   if (Object.keys(players).length === 0) return;
-
   const assignments: Record<string, number> = {};
-  Object.entries(players).forEach(([id, player]) => {
-    assignments[id] = player.tableNumber;
-  });
-
+  Object.entries(players).forEach(([id, player]) => { assignments[id] = player.tableNumber; });
   const now = Date.now();
-  const historyId = `pub_${now}`;
-  const history = parseJson<Record<string, { pushedAt: number; assignments: Record<string, number> }>>(doc.publishHistory as string) || {};
-  history[historyId] = { pushedAt: now, assignments };
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    publishedTables: toJson({ assignments, pushedAt: now }),
-    publishHistory: toJson(history),
+  await updateRoomData(roomId, d => {
+    d.publishedTables = { assignments, pushedAt: now };
+    if (!d.publishHistory) d.publishHistory = {};
+    d.publishHistory[`pub_${now}`] = { pushedAt: now, assignments };
   });
 }
 
@@ -1113,10 +907,11 @@ function shuffleArray<T>(arr: T[]): T[] {
 export async function shuffleTables(roomId: string): Promise<void> {
   const doc = await getRoomDoc(roomId);
   if (!doc) return;
-  const config = parseJson<RoomConfig>(doc.config as string)!;
+  const data = parseRoomData(doc);
+  if (!data) return;
   const players = await fetchPlayers(roomId);
 
-  const tableCount = config.tableCount || 1;
+  const tableCount = data.config.tableCount || 1;
   const assignedIds = Object.entries(players)
     .filter(([, p]) => p.tableNumber > 0)
     .map(([id]) => id);
@@ -1135,10 +930,11 @@ export async function shuffleTables(roomId: string): Promise<void> {
 export async function halfShuffleTables(roomId: string): Promise<void> {
   const doc = await getRoomDoc(roomId);
   if (!doc) return;
-  const config = parseJson<RoomConfig>(doc.config as string)!;
+  const data = parseRoomData(doc);
+  if (!data) return;
   const players = await fetchPlayers(roomId);
 
-  const tableCount = config.tableCount || 1;
+  const tableCount = data.config.tableCount || 1;
   if (tableCount < 2) return;
 
   const byTable: Record<number, string[]> = {};
@@ -1256,57 +1052,40 @@ export async function initStreamsGame(roomId: string, gameType: GameType): Promi
     boards,
   };
 
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(game),
-    state: toJson({ ...(parseJson<RoomState>((await getRoomDoc(roomId))?.state as string) || { currentStep: 0, phase: "waiting" }), phase: "playing" }),
+  await updateRoomData(roomId, d => {
+    d.currentGame = game;
+    d.state = { ...d.state, phase: "playing" };
   });
 }
 
 export async function flipCard(roomId: string): Promise<void> {
-  const doc = await getRoomDoc(roomId);
-  if (!doc) return;
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.streams) return;
+  await updateRoomData(roomId, d => {
+    const cg = d.currentGame;
+    if (!cg?.streams) return;
+    const streams = cg.streams;
+    const isKrukkurin = cg.type === "krukkurin";
+    const cardsNeeded = isKrukkurin ? 2 : 1;
+    const nextIdx = streams.currentCardIdx + cardsNeeded;
+    if (nextIdx >= streams.deck.length) return;
 
-  const streams = cg.streams;
-  const isKrukkurin = cg.type === "krukkurin";
-  const cardsNeeded = isKrukkurin ? 2 : 1;
-  const nextIdx = streams.currentCardIdx + cardsNeeded;
-  if (nextIdx >= streams.deck.length) return;
-
-  if (isKrukkurin) {
-    const num1 = streams.deck[streams.currentCardIdx + 1];
-    const num2 = streams.deck[streams.currentCardIdx + 2];
-    const color1 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
-    const color2 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
-    const card = {
-      number: num1, points: 0,
-      items: [{ number: num1, color: color1 }, { number: num2, color: color2 }],
-      flippedAt: Date.now(),
-    };
-    streams.currentCardIdx = nextIdx;
-    streams.currentCard = card;
-    streams.history = [...(streams.history || []), card];
-  } else {
-    const number = streams.deck[streams.currentCardIdx + 1];
-    const points = Math.floor(Math.random() * 18) + 1;
-    const card = { number, points, flippedAt: Date.now() };
-    streams.currentCardIdx = nextIdx;
-    streams.currentCard = card;
-    streams.history = [...(streams.history || []), card];
-  }
-
-  // 全員の acted をリセット
-  if (cg.boards) {
-    Object.entries(cg.boards).forEach(([, board]) => {
-      if (!board.eliminated && !board.completed) {
-        board.acted = false;
-      }
-    });
-  }
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
+    if (isKrukkurin) {
+      const num1 = streams.deck[streams.currentCardIdx + 1];
+      const num2 = streams.deck[streams.currentCardIdx + 2];
+      const color1 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
+      const color2 = KRUKKURIN_CARD_COLORS[Math.floor(Math.random() * KRUKKURIN_CARD_COLORS.length)];
+      const card = { number: num1, points: 0, items: [{ number: num1, color: color1 }, { number: num2, color: color2 }], flippedAt: Date.now() };
+      streams.currentCardIdx = nextIdx;
+      streams.currentCard = card;
+      streams.history = [...(streams.history || []), card];
+    } else {
+      const number = streams.deck[streams.currentCardIdx + 1];
+      const points = Math.floor(Math.random() * 18) + 1;
+      const card = { number, points, flippedAt: Date.now() };
+      streams.currentCardIdx = nextIdx;
+      streams.currentCard = card;
+      streams.history = [...(streams.history || []), card];
+    }
+    if (cg.boards) { Object.values(cg.boards).forEach(board => { if (!board.eliminated && !board.completed) board.acted = false; }); }
   });
 }
 
@@ -1324,33 +1103,26 @@ function applyLastSurvivorBonus(
   return boards;
 }
 
-export async function placeCard(
-  roomId: string,
-  playerId: string,
-  rowIndex: number,
-  slotIndex: number,
-  itemIndex?: number,
-): Promise<{ success: boolean; error?: string }> {
+export async function placeCard(roomId: string, playerId: string, rowIndex: number, slotIndex: number, itemIndex?: number): Promise<{ success: boolean; error?: string }> {
   const doc = await getRoomDoc(roomId);
   if (!doc) return { success: false, error: "ゲーム状態が無効です" };
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.streams?.currentCard || !cg.boards) return { success: false, error: "ゲーム状態が無効です" };
+  const data = parseRoomData(doc);
+  if (!data?.currentGame?.streams?.currentCard || !data.currentGame.boards) return { success: false, error: "ゲーム状態が無効です" };
 
-  const board = cg.boards[playerId];
+  const cg = data.currentGame;
+  const board = cg.boards![playerId];
   if (!board) return { success: false, error: "ボードが見つかりません" };
   if (board.eliminated) return { success: false, error: "脱落済みです" };
   if (board.acted) return { success: false, error: "既にアクション済みです" };
 
-  const card = cg.streams.currentCard;
+  const card = cg.streams!.currentCard!;
   const isKrukkurin = cg.type === "krukkurin";
   const rows = board.rows;
-
   if (!rows[rowIndex] || rows[rowIndex][slotIndex] === undefined) return { success: false, error: "無効なマス位置です" };
   if (rows[rowIndex][slotIndex] !== 0) return { success: false, error: "そのマスは空いていません" };
 
   let placeNumber: number;
   let placeColor = "";
-
   if (isKrukkurin) {
     if (itemIndex === undefined || !card.items?.[itemIndex]) return { success: false, error: "無効なアイテムです" };
     placeNumber = card.items[itemIndex].number;
@@ -1359,7 +1131,6 @@ export async function placeCard(
     placeNumber = card.number;
   }
 
-  // 昇順バリデーション
   const row = rows[rowIndex];
   let leftVal = 0;
   for (let i = slotIndex - 1; i >= 0; i--) { if (row[i] !== 0) { leftVal = row[i]; break; } }
@@ -1368,15 +1139,12 @@ export async function placeCard(
   for (let i = slotIndex + 1; i < row.length; i++) { if (row[i] !== 0) { rightVal = row[i]; break; } }
   if (rightVal !== 0 && rightVal < placeNumber) return { success: false, error: "昇順ルール違反です（右の値より大きい）" };
 
-  // 配置実行
   const newRows = rows.map(r => [...r]);
   newRows[rowIndex][slotIndex] = placeNumber;
   const allFilled = newRows.every(r => r.every(v => v !== 0));
-
   board.rows = newRows;
   board.completed = allFilled;
   board.acted = true;
-
   if (isKrukkurin) {
     const newColors = (board.colors || createEmptyColors(cg.type)).map((r: string[]) => [...r]);
     newColors[rowIndex][slotIndex] = placeColor;
@@ -1385,43 +1153,29 @@ export async function placeCard(
   } else {
     board.score = board.score + card.points;
   }
+  if (allFilled) applyLastSurvivorBonus(cg.boards!, playerId);
 
-  if (allFilled) {
-    applyLastSurvivorBonus(cg.boards, playerId);
-  }
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
-  });
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, { data: toJson(data) });
   return { success: true };
 }
 
-export async function passCard(
-  roomId: string,
-  playerId: string,
-): Promise<{ success: boolean; error?: string }> {
+export async function passCard(roomId: string, playerId: string): Promise<{ success: boolean; error?: string }> {
   const doc = await getRoomDoc(roomId);
   if (!doc) return { success: false, error: "ゲーム状態が無効です" };
-  const cg = parseJson<CurrentGame>(doc.currentGame as string);
-  if (!cg?.boards) return { success: false, error: "ゲーム状態が無効です" };
+  const data = parseRoomData(doc);
+  if (!data?.currentGame?.boards) return { success: false, error: "ゲーム状態が無効です" };
 
-  const board = cg.boards[playerId];
+  const board = data.currentGame.boards[playerId];
   if (!board) return { success: false, error: "ボードが見つかりません" };
   if (board.eliminated) return { success: false, error: "脱落済みです" };
   if (board.acted) return { success: false, error: "既にアクション済みです" };
-
   board.passCount += 1;
   board.score -= 1;
   board.acted = true;
   board.eliminated = board.passCount >= 4;
+  if (board.eliminated) applyLastSurvivorBonus(data.currentGame.boards, playerId);
 
-  if (board.eliminated) {
-    applyLastSurvivorBonus(cg.boards, playerId);
-  }
-
-  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, {
-    currentGame: toJson(cg),
-  });
+  await getDatabases().updateDocument(DATABASE_ID, COLLECTION_ROOMS, roomId, { data: toJson(data) });
   return { success: true };
 }
 

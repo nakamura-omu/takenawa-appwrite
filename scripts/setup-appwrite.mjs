@@ -57,11 +57,11 @@ async function createIntAttr(collId, key, required = false) {
   });
 }
 
-async function createBoolAttr(collId, key, required = false, defaultVal = false) {
+async function createBoolAttr(collId, key, required = false, defaultVal = undefined) {
   console.log(`  + ${collId}.${key} (boolean)`);
-  await api("POST", `/databases/${DATABASE_ID}/collections/${collId}/attributes/boolean`, {
-    key, required, default: defaultVal,
-  });
+  const body = { key, required };
+  if (!required && defaultVal !== undefined) body.default = defaultVal;
+  await api("POST", `/databases/${DATABASE_ID}/collections/${collId}/attributes/boolean`, body);
 }
 
 async function createIndex(collId, key, type, attributes, orders) {
@@ -103,19 +103,11 @@ async function main() {
     ],
   });
 
-  // Room attributes
-  await createStringAttr("rooms", "creatorUid", 255);
-  await createStringAttr("rooms", "config", 16000, true);
-  await createStringAttr("rooms", "state", 4000, true);
-  await createStringAttr("rooms", "scenario", 65000);
-  await createStringAttr("rooms", "currentGame", 65000);
-  await createStringAttr("rooms", "messages", 65000);
-  await createStringAttr("rooms", "gameResults", 65000);
-  await createStringAttr("rooms", "stepResponses", 65000);
-  await createStringAttr("rooms", "stepReveals", 8000);
-  await createStringAttr("rooms", "revealVisibility", 8000);
-  await createStringAttr("rooms", "publishedTables", 16000);
-  await createStringAttr("rooms", "publishHistory", 65000);
+  // Room attributes (MariaDB VARCHAR上限のため2属性に統合)
+  // creatorUid: インデックス用に独立
+  // data: ルーム全データをJSON文字列で格納
+  await createStringAttr("rooms", "creatorUid", 36);
+  await createStringAttr("rooms", "data", 16000, true);
 
   await waitForAttributes("rooms");
   await createIndex("rooms", "idx_creatorUid", "key", ["creatorUid"], ["ASC"]);
